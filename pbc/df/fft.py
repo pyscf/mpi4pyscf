@@ -22,9 +22,9 @@ from pyscf.pbc.dft import numint
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import fft
 
-from espy.lib import logger
-from espy.tools import mpi
-from espy.pbc.df import fft_jk
+from mpi4pyscf.lib import logger
+from mpi4pyscf.tools import mpi
+from mpi4pyscf.pbc.df import fft_jk
 
 comm = mpi.comm
 rank = mpi.rank
@@ -34,7 +34,7 @@ def init_DF(cell, kpts=numpy.zeros((1,3))):
     mydf = mpi.pool.apply(_init_DF_wrap, [cell, kpts], [cell.dumps(), kpts])
     return mydf
 def _init_DF_wrap(args):
-    from espy.pbc.df import fft
+    from mpi4pyscf.pbc.df import fft
     cell, kpts = args
     if fft.rank > 0:
         cell = fft.pgto.loads(cell)
@@ -45,7 +45,7 @@ def get_nuc(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
     return mpi.pool.apply(_get_nuc_wrap, args, args)
 def _get_nuc_wrap(args):
-    from espy.pbc.df import fft
+    from mpi4pyscf.pbc.df import fft
     return fft._get_nuc(*args)
 def _get_nuc(reg_keys, kpts):
     mydf = fft_jk._load_df(reg_keys)
@@ -83,7 +83,7 @@ def get_pp(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
     return mpi.pool.apply(_get_pp_wrap, args, args)
 def _get_pp_wrap(args):
-    from espy.pbc.df import fft
+    from mpi4pyscf.pbc.df import fft
     return fft._get_pp(*args)
 def _get_pp(reg_keys, kpts=None):
     mydf = fft_jk._load_df(reg_keys)
@@ -250,7 +250,7 @@ class DF(fft.DF):
 if __name__ == '__main__':
     # run with mpirun -n
     from pyscf.pbc import gto as pgto
-    from espy.pbc import df
+    from mpi4pyscf.pbc import df
     cell = pgto.Cell()
     cell.atom = 'He 1. .5 .5; C .1 1.3 2.1'
     cell.basis = {'He': [(0, (2.5, 1)), (0, (1., 1))],

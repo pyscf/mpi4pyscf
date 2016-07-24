@@ -14,10 +14,10 @@ from pyscf.pbc import gto
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import pwdf
 
-from espy.lib import logger
-from espy.tools import mpi
-from espy.pbc.df import pwdf_jk
-#from espy.pbc.df import pwdf_ao2mo
+from mpi4pyscf.lib import logger
+from mpi4pyscf.tools import mpi
+from mpi4pyscf.pbc.df import pwdf_jk
+#from mpi4pyscf.pbc.df import pwdf_ao2mo
 
 comm = mpi.comm
 rank = mpi.rank
@@ -27,7 +27,7 @@ def init_PWDF(cell, kpts=numpy.zeros((1,3))):
     mydf = mpi.pool.apply(_init_PWDF_wrap, [cell, kpts], [cell.dumps(), kpts])
     return mydf
 def _init_PWDF_wrap(args):
-    from espy.pbc.df import pwdf
+    from mpi4pyscf.pbc.df import pwdf
     cell, kpts = args
     if pwdf.rank > 0:
         cell = pwdf.gto.loads(cell)
@@ -38,7 +38,7 @@ def get_nuc(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
     return mpi.pool.apply(_get_nuc_wrap, args, args)
 def _get_nuc_wrap(args):
-    from espy.pbc.df import pwdf
+    from mpi4pyscf.pbc.df import pwdf
     return pwdf._get_nuc(*args)
 def _get_nuc(reg_keys, kpts):
     mydf = pwdf_jk._load_df(reg_keys)
@@ -50,7 +50,7 @@ def get_pp(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
     return mpi.pool.apply(_get_pp_wrap, args, args)
 def _get_pp_wrap(args):
-    from espy.pbc.df import pwdf
+    from mpi4pyscf.pbc.df import pwdf
     return pwdf._get_pp(*args)
 def _get_pp(reg_keys, kpts):
     if kpts is None:
@@ -117,7 +117,7 @@ class PWDF(pwdf.PWDF):
 if __name__ == '__main__':
     # run with mpirun -n
     from pyscf.pbc import gto as pgto
-    from espy.pbc import df
+    from mpi4pyscf.pbc import df
     cell = pgto.Cell()
     cell.atom = 'He 1. .5 .5; C .1 1.3 2.1'
     cell.basis = {'He': [(0, (2.5, 1)), (0, (1., 1))],

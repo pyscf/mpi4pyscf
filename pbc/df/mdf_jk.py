@@ -15,9 +15,9 @@ import numpy
 from pyscf import lib
 from pyscf.pbc import tools
 
-from espy.lib import logger
-from espy.tools import mpi
-from espy.pbc.df import pwdf_jk
+from mpi4pyscf.lib import logger
+from mpi4pyscf.tools import mpi
+from mpi4pyscf.pbc.df import pwdf_jk
 
 comm = mpi.comm
 rank = mpi.rank
@@ -37,15 +37,15 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
             for light elements and even-tempered basis for heavy elements.
         gs : tuple
             number of grids in each (+)direction
-        with_df : XDF object
+        with_df : MDF object
     '''
-    from espy.pbc.df import xdf
+    from mpi4pyscf.pbc.df import mdf
     if with_df is None:
         if hasattr(mf, 'kpts'):
             kpts = mf.kpts
         else:
             kpts = numpy.reshape(mf.kpt, (1,3))
-        with_df = xdf.XDF(mf.cell, kpts)
+        with_df = mdf.MDF(mf.cell, kpts)
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
@@ -65,8 +65,8 @@ def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
     worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
     return mpi.pool.apply(_get_j_kpts_wrap, master_args, worker_args)
 def _get_j_kpts_wrap(args):
-    from espy.pbc.df import xdf_jk
-    return xdf_jk._get_j_kpts(*args)
+    from mpi4pyscf.pbc.df import mdf_jk
+    return mdf_jk._get_j_kpts(*args)
 def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
                 kpts=numpy.zeros((1,3)), kpt_band=None):
     mydf = _load_df(reg_keys)
@@ -204,11 +204,11 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
     worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
     return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
 def _get_k_kpts_wrap(args):
-    from espy.pbc.df import xdf_jk
-    return xdf_jk._get_k_kpts(*args)
+    from mpi4pyscf.pbc.df import mdf_jk
+    return mdf_jk._get_k_kpts(*args)
 def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                 kpts=numpy.zeros((1,3)), kpt_band=None):
-    from espy.pbc.df import xdf
+    from mpi4pyscf.pbc.df import mdf
     mydf = _load_df(reg_keys)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -357,7 +357,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         LpqR = LpqI = pqkR = LkR = pqkI = LkI = coulG = None
         return None
 
-    uniq_kptji = xdf._unique_kpt_ji(kpts)
+    uniq_kptji = mdf._unique_kpt_ji(kpts)
     kptji_on_node = mpi.static_partition(uniq_kptji)
     if len(kptji_on_node) > 0:
         for kj, kptj in enumerate(kpts):
@@ -396,8 +396,8 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     worker_args = (mydf._reg_keys, None, hermi, kpt, kpt_band)
     return mpi.pool.apply(_get_jk_wrap, master_args, worker_args)
 def _get_jk_wrap(args):
-    from espy.pbc.df import xdf_jk
-    return xdf_jk._get_jk(*args)
+    from mpi4pyscf.pbc.df import mdf_jk
+    return mdf_jk._get_jk(*args)
 def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             kpt_band=None, with_j=True, with_k=True):
     '''JK for given k-point'''

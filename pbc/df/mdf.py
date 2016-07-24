@@ -20,26 +20,26 @@ from pyscf.pbc import tools
 from pyscf.pbc.df import incore
 from pyscf.pbc.df import outcore
 from pyscf.pbc.df import ft_ao
-from pyscf.pbc.df import xdf
+from pyscf.pbc.df import mdf
 
-from espy.lib import logger
-from espy.tools import mpi
-from espy.pbc.df import xdf_jk
+from mpi4pyscf.lib import logger
+from mpi4pyscf.tools import mpi
+from mpi4pyscf.pbc.df import mdf_jk
 
 comm = mpi.comm
 rank = mpi.rank
 
 
-def init_XDF(cell, kpts=numpy.zeros((1,3))):
-    mydf = mpi.pool.apply(_init_XDF_wrap, [cell, kpts], [cell.dumps(), kpts])
+def init_MDF(cell, kpts=numpy.zeros((1,3))):
+    mydf = mpi.pool.apply(_init_MDF_wrap, [cell, kpts], [cell.dumps(), kpts])
     return mydf
-def _init_XDF_wrap(args):
-    from espy.pbc.df import xdf
+def _init_MDF_wrap(args):
+    from mpi4pyscf.pbc.df import mdf
     cell, kpts = args
-    if xdf.rank > 0:
-        cell = xdf.gto.loads(cell)
+    if mdf.rank > 0:
+        cell = mdf.gto.loads(cell)
         cell.verbose = 0
-    return xdf.mpi.register_for(xdf.XDF(cell, kpts))
+    return mdf.mpi.register_for(mdf.MDF(cell, kpts))
 
 def get_nuc(mydf, kpts=None):
     if mydf._cderi is None:
@@ -47,10 +47,10 @@ def get_nuc(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
     return mpi.pool.apply(_get_nuc_wrap, args, args)
 def _get_nuc_wrap(args):
-    from espy.pbc.df import xdf
-    return xdf._get_nuc(*args)
+    from mpi4pyscf.pbc.df import mdf
+    return mdf._get_nuc(*args)
 def _get_nuc(reg_keys, kpts=None):
-    mydf = xdf_jk._load_df(reg_keys)
+    mydf = mdf_jk._load_df(reg_keys)
     cell = mydf.cell
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
@@ -61,7 +61,7 @@ def _get_nuc(reg_keys, kpts=None):
     t1 = t0 = (time.clock(), time.time())
     nao = cell.nao_nr()
     auxcell = mydf.auxcell
-    nuccell = xdf.make_modchg_basis(cell, mydf.eta, 0)
+    nuccell = mdf.make_modchg_basis(cell, mydf.eta, 0)
     nuccell._bas = numpy.asarray(nuccell._bas[nuccell._bas[:,gto.mole.ANG_OF]==0],
                                  dtype=numpy.int32, order='C')
 
@@ -147,7 +147,7 @@ def get_pp(mydf, kpts=None):
     return vpp
 
 
-class XDF(xdf.XDF):
+class MDF(mdf.MDF):
     def __enter__(self):
         return self
     def __exit__(self):
@@ -275,13 +275,13 @@ class XDF(xdf.XDF):
         self.exxdiv = exxdiv
 
         if kpts.shape == (3,):
-            return xdf_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j, with_k)
+            return mdf_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j, with_k)
 
         vj = vk = None
         if with_k:
-            vk = xdf_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band)
+            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band)
         if with_j:
-            vj = xdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
+            vj = mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
         return vj, vk
 
 
@@ -293,10 +293,10 @@ def mpi_prange(start, stop, step):
 
 
 def _build_wrap(args):
-    from espy.pbc.df import xdf
-    return xdf._build(*args)
+    from mpi4pyscf.pbc.df import mdf
+    return mdf._build(*args)
 def _build(reg_keys, j_only=False, with_Lpq=True, with_j3c=True):
-# Unlike DF and PWDF class, here XDF objects are synced once
+# Unlike DF and PWDF class, here MDF objects are synced once
     mydf = mpi._registry[reg_keys[rank]]
     mydf.kpts, mydf.gs, mydf.metric, mydf.approx_sr_level, mydf.auxbasis, \
             mydf.eta, mydf.exxdiv = \
@@ -307,12 +307,12 @@ def _build(reg_keys, j_only=False, with_Lpq=True, with_j3c=True):
     t1 = (time.clock(), time.time())
     cell = mydf.cell
     if mydf.eta is None:
-        mydf.eta = xdf.estimate_eta(cell)
+        mydf.eta = mdf.estimate_eta(cell)
         log.debug('Set smooth gaussian eta to %.9g', mydf.eta)
     mydf.dump_flags()
 
-    auxcell = xdf.make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
-    chgcell = xdf.make_modchg_basis(auxcell, mydf.eta)
+    auxcell = mdf.make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
+    chgcell = mdf.make_modchg_basis(auxcell, mydf.eta)
 
     mydf._j_only = j_only
     if j_only:
@@ -338,11 +338,11 @@ def _build(reg_keys, j_only=False, with_Lpq=True, with_j3c=True):
         elif mydf.approx_sr_level == 1:
             build_Lpq_pbc(mydf, auxcell, chgcell, aosym, numpy.zeros((1,2,3)))
         elif mydf.approx_sr_level == 2:
-            xdf.build_Lpq_nonpbc(mydf, auxcell, chgcell)
+            mdf.build_Lpq_nonpbc(mydf, auxcell, chgcell)
         elif mydf.approx_sr_level == 3:
-            xdf.build_Lpq_1c_approx(mydf, auxcell, chgcell)
+            mdf.build_Lpq_1c_approx(mydf, auxcell, chgcell)
         elif mydf.approx_sr_level == 4:
-            xdf.build_Lpq_atomic(mydf, auxcell, chgcell, mydf.eta)
+            mdf.build_Lpq_atomic(mydf, auxcell, chgcell, mydf.eta)
     else:
         if mydf.approx_sr_level == 0:
             _distribute_int3c(mydf._cderi, 'Lpq', mydf.kpts, kptij_lst)
@@ -388,7 +388,7 @@ def build_j3c_pbc(mydf, auxcell, aosym, kptij_lst):
 
 def build_Lpq_pbc(mydf, auxcell, chgcell, aosym, kptij_lst):
     if mpi.pool.size == 1:
-        return xdf.build_Lpq_pbc(mydf, auxcell, chgcell, aosym, kptij_lst)
+        return mdf.build_Lpq_pbc(mydf, auxcell, chgcell, aosym, kptij_lst)
 
     # Each worker processor computes a segment of the auxbasis
     aux_loc = auxcell.ao_loc_nr()
@@ -418,7 +418,7 @@ def build_Lpq_pbc(mydf, auxcell, chgcell, aosym, kptij_lst):
                 Lpq = feri[key].value
                 del(feri[key])
                 Lpq = lib.cho_solve(j2c_k, Lpq)
-                feri[key] = xdf.compress_Lpq_to_chgcell(Lpq, auxcell, chgcell)
+                feri[key] = mdf.compress_Lpq_to_chgcell(Lpq, auxcell, chgcell)
 
 
 # Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
@@ -430,7 +430,7 @@ def _int_nuc_vloc(cell, nuccell, kpts):
     expLk = numpy.asarray(numpy.exp(1j*numpy.dot(Ls, kpts.T)), order='C')
     nkpts = len(kpts)
 
-    fakenuc = xdf._fake_nuc(cell)
+    fakenuc = mdf._fake_nuc(cell)
     fakenuc._atm, fakenuc._bas, fakenuc._env = \
             gto.conc_env(nuccell._atm, nuccell._bas, nuccell._env,
                          fakenuc._atm, fakenuc._bas, fakenuc._env)
@@ -527,9 +527,9 @@ def _distribute_int3c(ints_file, dataname, kpts, kptij_lst):
 
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
-    from espy.pbc import df
+    from mpi4pyscf.pbc import df
     cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
-    mydf = df.XDF(cell, kpts)
+    mydf = df.MDF(cell, kpts)
 
     v = mydf.get_nuc()
     print(v.shape)

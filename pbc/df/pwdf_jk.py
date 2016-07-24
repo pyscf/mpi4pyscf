@@ -13,8 +13,8 @@ import numpy
 from pyscf import lib
 from pyscf.pbc import tools
 
-from espy.lib import logger
-from espy.tools import mpi
+from mpi4pyscf.lib import logger
+from mpi4pyscf.tools import mpi
 
 comm = mpi.comm
 rank = mpi.rank
@@ -26,7 +26,7 @@ def get_j_kpts(mydf, dm_kpts, hermi=1,
     worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
     return mpi.pool.apply(_get_j_kpts_wrap, master_args, worker_args)
 def _get_j_kpts_wrap(args):
-    from espy.pbc.df import pwdf_jk
+    from mpi4pyscf.pbc.df import pwdf_jk
     return pwdf_jk._get_j_kpts(*args)
 def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
     mydf = _load_df(reg_keys)
@@ -106,7 +106,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
     worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
     return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
 def _get_k_kpts_wrap(args):
-    from espy.pbc.df import pwdf_jk
+    from mpi4pyscf.pbc.df import pwdf_jk
     return pwdf_jk._get_k_kpts(*args)
 def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                 kpts=numpy.zeros((1,3)), kpt_band=None):
@@ -214,7 +214,7 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     worker_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k)
     return mpi.pool.apply(_get_jk_wrap, master_args, worker_args)
 def _get_jk_wrap(args):
-    from espy.pbc.df import pwdf_jk
+    from mpi4pyscf.pbc.df import pwdf_jk
     return pwdf_jk._get_jk(*args)
 def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             kpt_band=None, with_j=True, with_k=True):

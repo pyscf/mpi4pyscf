@@ -68,7 +68,7 @@ import sys
 import time
 
 from pyscf.lib import parameters as param
-from espy.tools import mpi
+from mpi4pyscf.tools import mpi
 
 DEBUG4 = param.VERBOSE_DEBUG + 4
 DEBUG3 = param.VERBOSE_DEBUG + 3

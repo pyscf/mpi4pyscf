@@ -149,7 +149,7 @@ def register_for(obj):
 def del_registry(reg_keys):
     if reg_keys:
         def f(reg_keys):
-            from espy.tools import mpi
+            from mpi4pyscf.tools import mpi
             mpi._registry[reg_keys[mpi.rank]]
         pool.apply(f, reg_keys, reg_keys)
     return []
