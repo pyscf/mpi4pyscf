@@ -1,10 +1,10 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*$py.class
 
 # C extensions
 *.so
+*.dylib
 
 # Distribution / packaging
 .Python
@@ -15,7 +15,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -23,6 +22,12 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Local log files
+*~
+
+# Calculation examples
+*.molden
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
