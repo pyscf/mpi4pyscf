@@ -202,12 +202,12 @@ class MDF(mdf.MDF):
                 pqkI = numpy.ndarray((nao,nao,nG), buffer=pqkIbuf)
                 pqkR[:] = aoao[i0:i1].real.transpose(1,2,0)
                 pqkI[:] = aoao[i0:i1].imag.transpose(1,2,0)
-                kLR = numpy.ndarray((nG,naux), buffer=LkRbuf)
-                kLI = numpy.ndarray((nG,naux), buffer=LkIbuf)
-                kLR [:] = aoaux[i0:i1].real
-                kLI [:] = aoaux[i0:i1].imag
-                yield (pqkR.reshape(-1,nG), kLR.T,
-                       pqkI.reshape(-1,nG), kLI.T, p0+i0, p0+i1)
+                LkR = numpy.ndarray((naux,nG), buffer=LkRbuf)
+                LkI = numpy.ndarray((naux,nG), buffer=LkIbuf)
+                LkR [:] = aoaux[i0:i1].real.T
+                LkI [:] = aoaux[i0:i1].imag.T
+                yield (pqkR.reshape(-1,nG), LkR,
+                       pqkI.reshape(-1,nG), LkI, p0+i0, p0+i1)
 
     def mpi_ft_loop(self, cell, auxcell, gs=None, kpt=numpy.zeros(3),
                     kpts=None, max_memory=4000):
