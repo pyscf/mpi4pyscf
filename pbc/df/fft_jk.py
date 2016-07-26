@@ -105,7 +105,8 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             pass
         for k2, ao_k2 in mydf.mpi_aoR_loop(cell, gs, kpts):
             kpt2 = kpts[k2]
-            vkR_k1k2 = fft_jk.get_vkR(mydf, cell, aoR_kband, ao_k2, kpt_band, kpt2, coords)
+            vkR_k1k2 = fft_jk.get_vkR(mydf, cell, aoR_kband, ao_k2,
+                                      kpt_band, kpt2, coords, gs)
             #:vk_kpts = 1./nkpts * (cell.vol/ngs) * numpy.einsum('rs,Rp,Rqs,Rr->pq',
             #:            dm_kpts[k2], aoR_kband.conj(), vkR_k1k2, ao_k2)
             for i in range(nset):
@@ -129,7 +130,8 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             aoR_dms = [lib.dot(ao_k2, dms[i,k2]) for i in range(nset)]
             for k1, ao_k1 in mydf.aoR_loop(cell, gs, kpts):
                 kpt1 = kpts[k1]
-                vkR_k1k2 = fft_jk.get_vkR(mydf, cell, ao_k1, ao_k2, kpt1, kpt2, coords)
+                vkR_k1k2 = fft_jk.get_vkR(mydf, cell, ao_k1, ao_k2,
+                                          kpt1, kpt2, coords, gs)
                 for i in range(nset):
                     tmp_Rq = numpy.einsum('Rqs,Rs->Rq', vkR_k1k2, aoR_dms[i])
                     vk_kpts[i,k1] += weight * lib.dot(ao_k1.T.conj(), tmp_Rq)
