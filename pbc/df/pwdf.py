@@ -81,7 +81,98 @@ class PWDF(pwdf.PWDF):
     def close(self):
         self._reg_keys = mpi.del_registry(self._reg_keys)
 
-    def prange(self, start, stop, step):
+    def mpi_pw_loop(self, cell, gs=None, kpti_kptj=None, shls_slice=None,
+                    max_memory=2000):
+        '''Plane wave part'''
+        if gs is None:
+            gs = self.gs
+        if kpti_kptj is None:
+            kpti = kptj = numpy.zeros(3)
+        else:
+            kpti, kptj = kpti_kptj
+
+        nao = cell.nao_nr()
+        gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
+                                   numpy.append(range(gs[1]+1), range(-gs[1],0)),
+                                   numpy.append(range(gs[2]+1), range(-gs[2],0))))
+        invh = numpy.linalg.inv(cell._h)
+        Gv = 2*numpy.pi * numpy.dot(gxyz, invh)
+        ngs = gxyz.shape[0]
+
+# Theoretically, hermitian symmetry can be also found for kpti == kptj:
+#       f_ji(G) = \int f_ji exp(-iGr) = \int f_ij^* exp(-iGr) = [f_ij(-G)]^*
+# The hermi operation needs reordering the axis-0.  It is inefficient
+        if gamma_point(kpti) and gamma_point(kptj):
+            aosym = 's1hermi'
+        else:
+            aosym = 's1'
+
+        blksize = min(max(16, int(max_memory*1e6*.7/16/nao**2)), 16384)
+        sublk = max(16, int(blksize//4))
+        pqkRbuf = numpy.empty(nao*nao*sublk)
+        pqkIbuf = numpy.empty(nao*nao*sublk)
+
+        for p0, p1 in self.mpi_prange(0, ngs, blksize):
+            aoao = ft_ao.ft_aopair(cell, Gv[p0:p1], shls_slice, aosym, invh,
+                                   gxyz[p0:p1], gs, (kpti, kptj))
+            for i0, i1 in lib.prange(0, p1-p0, sublk):
+                nG = i1 - i0
+                pqkR = numpy.ndarray((nao,nao,nG), buffer=pqkRbuf)
+                pqkI = numpy.ndarray((nao,nao,nG), buffer=pqkIbuf)
+                pqkR[:] = aoao[i0:i1].real.transpose(1,2,0)
+                pqkI[:] = aoao[i0:i1].imag.transpose(1,2,0)
+                yield (pqkR.reshape(-1,nG),
+                       pqkI.reshape(-1,nG), p0+i0, p0+i1)
+
+    def mpi_ft_loop(self, cell, gs=None, kpt=numpy.zeros(3),
+                    kpts=None, shls_slice=None, max_memory=4000):
+        '''
+        Fourier transform iterator for all kpti which satisfy  kpt = kpts - kpti
+        '''
+        if gs is None: gs = self.gs
+        if kpts is None:
+            assert(gamma_point(kpt))
+            kpts = self.kpts
+        kpts = numpy.asarray(kpts)
+        nkpts = len(kpts)
+
+        nao = cell.nao_nr()
+        gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
+                                   numpy.append(range(gs[1]+1), range(-gs[1],0)),
+                                   numpy.append(range(gs[2]+1), range(-gs[2],0))))
+        invh = numpy.linalg.inv(cell._h)
+        Gv = 2*numpy.pi * numpy.dot(gxyz, invh)
+        ngs = gxyz.shape[0]
+
+# Theoretically, hermitian symmetry can be also found for kpti == kptj:
+#       f_ji(G) = \int f_ji exp(-iGr) = \int f_ij^* exp(-iGr) = [f_ij(-G)]^*
+# The hermi operation needs reordering the axis-0.  It is inefficient
+        if gamma_point(kpt) and gamma_point(kpts):
+            aosym = 's1hermi'
+        else:
+            aosym = 's1'
+
+        blksize = min(max(16, int(max_memory*1e6*.9/(nao**2*(nkpts+1)*16))), 16384)
+        buf = [numpy.zeros(nao*nao*blksize, dtype=numpy.complex128)
+               for k in range(nkpts)]
+        pqkRbuf = numpy.empty(nao*nao*blksize)
+        pqkIbuf = numpy.empty(nao*nao*blksize)
+
+        for p0, p1 in self.mpi_prange(0, ngs, blksize):
+            ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, invh,
+                                  gxyz[p0:p1], gs, kpt, kpts, out=buf)
+            nG = p1 - p0
+            for k in range(nkpts):
+                aoao = numpy.ndarray((nG,nao,nao), dtype=numpy.complex128,
+                                     order='F', buffer=buf[k])
+                pqkR = numpy.ndarray((nao,nao,nG), buffer=pqkRbuf)
+                pqkI = numpy.ndarray((nao,nao,nG), buffer=pqkIbuf)
+                pqkR[:] = aoao.real.transpose(1,2,0)
+                pqkI[:] = aoao.imag.transpose(1,2,0)
+                yield (k, pqkR.reshape(-1,nG), pqkI.reshape(-1,nG), p0, p1)
+                aoao[:] = 0  # == buf[k][:] = 0
+
+    def mpi_prange(self, start, stop, step):
         mpi_size = mpi.pool.size
         step = min(step, (stop-start+mpi_size-1)//mpi_size)
         task_lst = [(p0,p1) for p0, p1 in lib.prange(start, stop, step)]

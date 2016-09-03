@@ -47,6 +47,17 @@ def work_balanced_partition(tasks, costs=None):
     else:
         return tasks[:0]
 
+def tasks_location(partition):
+    '''A list to store the proccessor ID that each task is assigned to'''
+    def tasks_loc(tasks, *args, **kwargs):
+        work_map = numpy.zeros(len(tasks), dtype=int)
+        tasks_ids = numpy.arange(len(tasks))
+        for idx in partition(tasks_ids, *args, **kwargs):
+            work_map[idx] = rank
+        work_map = allreduce(work_map)
+        return work_map
+    return tasks_loc
+
 def bcast(buf, root=0):
     buf = numpy.asarray(buf, order='C')
     shape, dtype = comm.bcast((buf.shape, buf.dtype))
@@ -150,6 +161,6 @@ def del_registry(reg_keys):
     if reg_keys:
         def f(reg_keys):
             from mpi4pyscf.tools import mpi
-            mpi._registry[reg_keys[mpi.rank]]
+            mpi._registry.pop(reg_keys[mpi.rank])
         pool.apply(f, reg_keys, reg_keys)
     return []
