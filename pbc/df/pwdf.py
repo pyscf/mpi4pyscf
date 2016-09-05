@@ -13,6 +13,7 @@ from pyscf import lib
 from pyscf.pbc import gto
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import pwdf
+from pyscf.pbc.df import ft_ao
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -204,6 +205,11 @@ class PWDF(pwdf.PWDF):
         if with_j:
             vj = pwdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
         return vj, vk
+
+def is_zero(kpt):
+    return kpt is None or abs(kpt).sum() < 1e-9
+gamma_point = is_zero
+
 
 if __name__ == '__main__':
     # run with mpirun -n

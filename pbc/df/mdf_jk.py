@@ -14,6 +14,7 @@ import numpy
 
 from pyscf import lib
 from pyscf.pbc import tools
+from pyscf.pbc.df.mdf_jk import zdotNN, zdotNC, zdotCN
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -79,55 +80,33 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     nset, nkpts, nao = dms.shape[:3]
     auxcell = mydf.auxcell
     naux = auxcell.nao_nr()
-    nao_pair = nao * (nao+1) // 2
 
-    rho_coeffs = numpy.empty((nset,nkpts,naux))
-    if rank == 0:
-        rho_tot = numpy.zeros((nset,naux))
-        jaux = numpy.zeros((nset,naux))
-        for k, kpt in enumerate(kpts):
-            kptii = numpy.asarray((kpt,kpt))
-            for Lpq in mydf.load_Lpq(kptii):
-                if Lpq.shape[1] == nao_pair:
-                    Lpq = lib.unpack_tril(Lpq)
-            for jpq in mydf.load_j3c(kptii):
-                if jpq.shape[1] == nao_pair:
-                    jpq = lib.unpack_tril(jpq)
+    if kpt_band is None:
+        kpts_band = kpts
+    else:
+        kpts_band = numpy.reshape(kpt_band, (-1,3))
+    nband = len(kpts_band)
+    j_real = gamma_point(kpts_band)
 
-            for i in range(nset):
-                jaux[i] += numpy.einsum('kij,ji->k', jpq, dms[i,k]).real
-                rho_coeff = numpy.einsum('kij,ji->k', Lpq, dms[i,k]).real
-                rho_tot[i] += rho_coeff
-                rho_coeffs[i,k] = rho_coeff
-            Lpq = jpq = None
-        weight = 1./nkpts
-        jaux *= weight
-        rho_tot *= weight
-        j2c = auxcell.pbc_intor('cint2c2e_sph', 1, lib.HERMITIAN)
-        jaux -= numpy.dot(rho_tot, j2c.T)
-        j2c = None
-    rho_coeffs = mpi.bcast(rho_coeffs)
-
+    dmsR = dms.real.reshape(nset,nkpts,nao**2)
+    dmsI = dms.imag.reshape(nset,nkpts,nao**2)
     kpt_allow = numpy.zeros(3)
     coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
     ngs = len(coulG)
-    dmsR = dms.real.reshape(nset,nkpts,nao**2)
-    dmsI = dms.imag.reshape(nset,nkpts,nao**2)
     vR = numpy.zeros((nset,ngs))
     vI = numpy.zeros((nset,ngs))
     max_memory = mydf.max_memory - lib.current_memory()[0]
-    for k, pqkR, LkR, pqkI, LkI, p0, p1 \
-            in mydf.mpi_ft_loop(cell, auxcell, mydf.gs, kpt_allow, kpts, max_memory):
-        # contract dm to rho_rs(-G+k_rs)
+    for k, pqkR, pqkI, p0, p1 \
+            in mydf.mpi_ft_loop(cell, mydf.gs, kpt_allow, kpts,
+                                max_memory=max_memory):
+        # contract dm to rho_rs(-G+k_rs)  (Note no .T on dm)
         # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
         #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
         for i in range(nset):
             rhoR = numpy.dot(dmsR[i,k], pqkR)
-            rhoR-= numpy.dot(dmsI[i,k], pqkI)
-            rhoR-= numpy.dot(rho_coeffs[i,k], LkR)
-            rhoI = numpy.dot(dmsR[i,k], pqkI)
-            rhoI+= numpy.dot(dmsI[i,k], pqkR)
-            rhoI-= numpy.dot(rho_coeffs[i,k], LkI)
+            rhoR+= numpy.dot(dmsI[i,k], pqkI)
+            rhoI = numpy.dot(dmsI[i,k], pqkR)
+            rhoI-= numpy.dot(dmsR[i,k], pqkI)
             vR[i,p0:p1] += rhoR * coulG[p0:p1]
             vI[i,p0:p1] += rhoI * coulG[p0:p1]
     weight = 1./nkpts
@@ -136,60 +115,86 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     vR = mpi.allreduce(vR)
     vI = mpi.allreduce(vI)
 
-    pqkR = LkR = pqkI = LkI = coulG = None
+    pqkR = pqkI = coulG = None
     t1 = log.timer_debug1('get_j pass 1 to compute J(G)', *t1)
 
     if kpt_band is None:
         kpts_band = kpts
     else:
         kpts_band = numpy.reshape(kpt_band, (-1,3))
-    nband = len(kpts_band)
 
     vjR = numpy.zeros((nset,nband,nao*nao))
     vjI = numpy.zeros((nset,nband,nao*nao))
-    node_jaux = numpy.zeros((nset,naux))
-    for k, pqkR, LkR, pqkI, LkI, p0, p1 \
-            in mydf.mpi_ft_loop(cell, auxcell, mydf.gs, kpt_allow,
-                                kpts_band, max_memory):
+    for k, pqkR, pqkI, p0, p1 \
+            in mydf.mpi_ft_loop(cell, mydf.gs, kpt_allow, kpts_band,
+                            max_memory=max_memory):
         for i in range(nset):
             vjR[i,k] += numpy.dot(pqkR, vR[i,p0:p1])
-            vjR[i,k] += numpy.dot(pqkI, vI[i,p0:p1])
-        if abs(kpts_band[k]).sum() > 1e-9:  # if not gamma point
-            for i in range(nset):
+            vjR[i,k] -= numpy.dot(pqkI, vI[i,p0:p1])
+            if not j_real:
                 vjI[i,k] += numpy.dot(pqkI, vR[i,p0:p1])
-                vjI[i,k] -= numpy.dot(pqkR, vI[i,p0:p1])
-        if k+1 == nband:  # Construct jaux once, it is the same for all kpts
-            for i in range(nset):
-                node_jaux[i] -= numpy.dot(LkR, vR[i,p0:p1])
-                node_jaux[i] -= numpy.dot(LkI, vI[i,p0:p1])
-        pqkR = LkR = pqkI = LkI = coulG = None
+                vjI[i,k] += numpy.dot(pqkR, vI[i,p0:p1])
+        pqkR = pqkI = coulG = None
 
-    if abs(kpts_band).sum() < 1e-9:  # gamma point only
-        vj_kpts = vjR
-    else:
-        vj_kpts = vjR + vjI*1j
-    vj_kpts = mpi.reduce(vj_kpts)
-    node_jaux = mpi.reduce(node_jaux)
-
+    vjR = mpi.reduce(vjR)
+    vjI = mpi.reduce(vjI)
     if rank == 0:
-        jaux += node_jaux
-
+        rhoR  = numpy.zeros((nset,naux))
+        rhoI  = numpy.zeros((nset,naux))
+        jauxR = numpy.zeros((nset,naux))
+        jauxI = numpy.zeros((nset,naux))
         for k, kpt in enumerate(kpts_band):
             kptii = numpy.asarray((kpt,kpt))
-            for Lpq in mydf.load_Lpq(kptii):
-                if Lpq.shape[1] == nao_pair:
-                    Lpq = lib.unpack_tril(Lpq).reshape(naux,-1)
-            for jpq in mydf.load_j3c(kptii):
-                if jpq.shape[1] == nao_pair:
-                    jpq = lib.unpack_tril(jpq).reshape(naux,-1)
+            p1 = 0
+            for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, False):
+                p0, p1 = p1, p1+LpqR.shape[1]
+                #:Lpq = (LpqR + LpqI*1j).transpose(1,0,2)
+                #:j3c = (j3cR + j3cI*1j).transpose(1,0,2)
+                #:rho [:,p0:p1] += numpy.einsum('Lpq,xpq->xL', Lpq, dms[:,k])
+                #:jaux[:,p0:p1] += numpy.einsum('Lpq,xpq->xL', j3c, dms[:,k])
+                rhoR [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsR[:,k])
+                rhoR [:,p0:p1]-= numpy.einsum('Lp,xp->xL', LpqI, dmsI[:,k])
+                rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsI[:,k])
+                rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqI, dmsR[:,k])
+                jauxR[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsR[:,k])
+                jauxR[:,p0:p1]-= numpy.einsum('Lp,xp->xL', j3cI, dmsI[:,k])
+                jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsI[:,k])
+                jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cI, dmsR[:,k])
 
-            vj_kpts[:,k] += numpy.dot(jaux, Lpq)
-            vj_kpts[:,k] += numpy.dot(rho_tot, jpq)
-        vj_kpts = vj_kpts.reshape(-1,nband,nao,nao)
+        weight = 1./nkpts
+        jauxR *= weight
+        jauxI *= weight
+        rhoR *= weight
+        rhoI *= weight
+        vjR = vjR.reshape(nset,nband,nao,nao)
+        vjI = vjI.reshape(nset,nband,nao,nao)
+        for k, kpt in enumerate(kpts_band):
+            kptii = numpy.asarray((kpt,kpt))
+            p1 = 0
+            for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, True, False):
+                p0, p1 = p1, p1+LpqR.shape[1]
+                #:v = numpy.dot(jaux, Lpq) + numpy.dot(rho, j3c)
+                #:vj_kpts[:,k] += lib.unpack_tril(v)
+                v  = numpy.dot(jauxR[:,p0:p1], LpqR)
+                v -= numpy.dot(jauxI[:,p0:p1], LpqI)
+                v += numpy.dot(rhoR [:,p0:p1], j3cR)
+                v -= numpy.dot(rhoI [:,p0:p1], j3cI)
+                vjR[:,k] += lib.unpack_tril(v)
+                if not j_real:
+                    v  = numpy.dot(jauxR[:,p0:p1], LpqI)
+                    v += numpy.dot(jauxI[:,p0:p1], LpqR)
+                    v += numpy.dot(rhoR [:,p0:p1], j3cI)
+                    v += numpy.dot(rhoI [:,p0:p1], j3cR)
+                    vjI[:,k] += lib.unpack_tril(v, lib.ANTIHERMI)
         t1 = log.timer_debug1('get_j pass 2', *t1)
 
+        if j_real:
+            vj_kpts = vjR
+        else:
+            vj_kpts = vjR + vjI*1j
+
         if kpt_band is not None and numpy.shape(kpt_band) == (3,):
-            if dm_kpts.ndim == 3:  # One set of dm_kpts for KRHF
+            if nset == 1:  # One set of dm_kpts for KRHF
                 return vj_kpts[0,0]
             else:
                 return vj_kpts[:,0]
@@ -230,6 +235,10 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
     kk_table = kpts_band.reshape(-1,1,3) - kpts.reshape(1,-1,3)
     kk_todo = numpy.ones(kk_table.shape[:2], dtype=bool)
     vk_kpts = numpy.zeros((nset,nband,nao,nao), dtype=numpy.complex128)
+    vkR = numpy.zeros((nset,nband,nao,nao))
+    vkI = numpy.zeros((nset,nband,nao,nao))
+    dmsR = numpy.asarray(dms.real, order='C')
+    dmsI = numpy.asarray(dms.imag, order='C')
 
     # K_pq = ( p{k1} i{k2} | i{k2} q{k1} )
     def make_kpt(kpt):  # kpt = kptj - kpti
@@ -241,140 +250,122 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         log.debug1('kpti_idx = %s', kpti_idx)
         log.debug1('kptj_idx = %s', kptj_idx)
         kk_todo[kpti_idx,kptj_idx] = False
-        if swap_2e and abs(kpt).sum() > 1e-9:
+        if swap_2e and not is_zero(kpt):
             kk_todo[kptj_idx,kpti_idx] = False
-
-        # Note: kj-ki for electorn 1 and ki-kj for electron 2
-        # j2c ~ ({kj-ki}|{ks-kr}) ~ ({kj-ki}|-{kj-ki}) ~ ({kj-ki}|{ki-kj})
-        # j3c ~ (Q|kj,ki) = j3c{ji} = (Q|ki,kj)* = conj(transpose(j3c{ij}, (0,2,1)))
-        kptkl = -kpt  # = kpti-kptj
-        j2c = auxcell.pbc_intor('cint2c2e_sph', 1, lib.HERMITIAN, kptkl)
-
-        LpqR = []
-        LpqI = []
-        for ki,kj in zip(kpti_idx,kptj_idx):
-            kpti = kpts_band[ki]
-            kptj = kpts[kj]
-            kptij = numpy.asarray((kpti,kptj))
-            for Lpq in mydf.load_Lpq(kptij):
-                if Lpq.shape[1] == nao_pair:
-                    Lpq = lib.unpack_tril(Lpq)
-            for jpq in mydf.load_j3c(kptij):
-                if jpq.shape[1] == nao_pair:
-                    jpq = lib.unpack_tril(jpq)
-
-            # K ~ 'Lpq,jrs,qr->ps' + 'jpq,Lrs,qr->ps' - 'Lpq,LM,Mrs,qr->ps'
-            if hermi == lib.HERMITIAN:
-                jpq1 = lib.dot(j2c.T, Lpq.reshape(naux,-1), -.5).reshape(-1,nao,nao)
-                jpq1 += jpq.reshape(-1,nao,nao)
-                for i in range(nset):
-                    dm = dms[i,kj]
-                    Lpi = lib.dot(Lpq.reshape(-1,nao), dm).reshape(-1,nao,nao)
-                    v = numpy.einsum('Lpi,Lqi->pq', Lpi, jpq1.conj())
-                    vk_kpts[i,ki] += v
-                    vk_kpts[i,ki] += v.T.conj()
-            else:
-                jpq1 = lib.dot(j2c.T, Lpq.reshape(naux,-1), -1).reshape(-1,nao,nao)
-                jpq1 += jpq.reshape(-1,nao,nao)
-                for i in range(nset):
-                    dm = dms[i,kj]
-                    Lpi = lib.dot(Lpq.reshape(-1,nao), dm).reshape(-1,nao,nao)
-                    vk_kpts[i,ki] += numpy.einsum('Lpi,Lqi->pq', Lpi, jpq1.conj())
-                    jpq1 = lib.dot(jpq.reshape(-1,nao), dm).reshape(-1,nao,nao)
-                    vk_kpts[i,ki] += numpy.einsum('Lpi,Lqi->pq', jpq1,
-                                                  Lpq.reshape(-1,nao,nao).conj())
-            Lpi = jpq1 = None
-
-            if swap_2e and abs(kpt).sum() > 1e-9:
-                # pqrs = Lpq,jrs' + 'jpq,Lrs' - 'Lpq,LM,Mrs'
-                # K ~ 'pqrs,sp->rq'
-                #:tmp = lib.dot(j2c.T, Lpq.reshape(naux,-1), -1).reshape(-1,nao,nao)
-                #:tmp+= jpq
-                #:v4 = lib.dot(Lpq.reshape(naux,-1).T, tmp.conj().reshape(naux,-1))
-                #:v4+= lib.dot(jpq.reshape(naux,-1).T, Lpq.conj().reshape(naux,-1))
-                #:vk_kpts[kj] += numpy.einsum('pqsr,sp->rq', v4.reshape((nao,)*4), dm)
-                if hermi == lib.HERMITIAN:
-                    jpq1 = lib.dot(j2c.T, Lpq.reshape(naux,-1), -.5).reshape(-1,nao,nao)
-                    jpq1 += jpq.reshape(-1,nao,nao)
-                    for i in range(nset):
-                        dm = dms[i,ki]
-                        Lip = numpy.einsum('Lpq,sp->Lsq', Lpq.reshape(-1,nao,nao), dm)
-                        v = numpy.einsum('Lsq,Lsr->rq', Lip, jpq1.conj())
-                        vk_kpts[i,kj] += v
-                        vk_kpts[i,kj] += v.T.conj()
-                else:
-                    jpq1 = lib.dot(j2c.T, Lpq.reshape(naux,-1), -1).reshape(-1,nao,nao)
-                    jpq1 += jpq.reshape(-1,nao,nao)
-                    for i in range(nset):
-                        dm = dms[i,ki]
-                        Lip = numpy.einsum('Lpq,sp->Lsq', Lpq.reshape(-1,nao,nao), dm)
-                        vk_kpts[i,kj] += numpy.einsum('Lsq,Lsr->rq', Lip, jpq1.conj())
-                        jpq1 = numpy.einsum('jpq,sp->jsq', jpq.reshape(-1,nao,nao), dm)
-                        vk_kpts[i,kj] += numpy.einsum('Lsq,Lsr->rq', jpq1,
-                                                      Lpq.reshape(-1,nao,nao).conj())
-            Lip = jpq1 = None
-
-            LpqR.append(numpy.asarray(Lpq.real.reshape(naux,-1), order='C'))
-            LpqI.append(numpy.asarray(Lpq.imag.reshape(naux,-1), order='C'))
-            Lpq = jpq = None
 
         max_memory = (mydf.max_memory - lib.current_memory()[0]) * .8
         vkcoulG = tools.get_coulG(cell, kpt, True, mydf, mydf.gs) / cell.vol
         kptjs = kpts[kptj_idx]
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
-        for k, pqkR, LkR, pqkI, LkI, p0, p1 \
-                in mydf.ft_loop(cell, auxcell, mydf.gs, kpt, kptjs, max_memory):
+        for k, pqkR, pqkI, p0, p1 \
+                in mydf.mpi_ft_loop(cell, mydf.gs, kpt, kptjs, max_memory=max_memory):
             ki = kpti_idx[k]
             kj = kptj_idx[k]
             coulG = numpy.sqrt(vkcoulG[p0:p1])
 
 # case 1: k_pq = (pi|iq)
-            lib.dot(LpqR[k].T, LkR, -1, pqkR, 1)
-            lib.dot(LpqI[k].T, LkI,  1, pqkR, 1)
+#:v4 = numpy.einsum('ijL,lkL->ijkl', pqk, pqk.conj())
+#:vk += numpy.einsum('ijkl,jk->il', v4, dm)
             pqkR *= coulG
-            lib.dot(LpqI[k].T, LkR, -1, pqkI, 1)
-            lib.dot(LpqR[k].T, LkI, -1, pqkI, 1)
             pqkI *= coulG
-            rsk =(pqkR.reshape(nao,nao,-1).transpose(1,0,2) -
-                  pqkI.reshape(nao,nao,-1).transpose(1,0,2)*1j)
-            qpk = rsk.conj()
+            pLqR = lib.transpose(pqkR.reshape(nao,nao,-1), axes=(0,2,1))
+            pLqI = lib.transpose(pqkI.reshape(nao,nao,-1), axes=(0,2,1))
+            iLkR = numpy.empty((nao*(p1-p0),nao))
+            iLkI = numpy.empty((nao*(p1-p0),nao))
             for i in range(nset):
-                qsk = lib.dot(dms[i,kj], rsk.reshape(nao,-1)).reshape(nao,nao,-1)
-                vk_kpts[i,ki] += numpy.einsum('qpk,qsk->ps', qpk, qsk)
-                qsk = None
-            rsk = qpk = None
+                iLkR, iLkI = zdotNN(pLqR.reshape(-1,nao), pLqI.reshape(-1,nao),
+                                    dmsR[i,kj], dmsI[i,kj], 1, iLkR, iLkI)
+                zdotNC(iLkR.reshape(nao,-1), iLkI.reshape(nao,-1),
+                       pLqR.reshape(nao,-1).T, pLqI.reshape(nao,-1).T,
+                       1, vkR[i,ki], vkI[i,ki], 1)
 
 # case 2: k_pq = (iq|pi)
-            if swap_2e and abs(kpt).sum() > 1e-9:
-                srk = pqkR - pqkI*1j
-                pqk = srk.reshape(nao,nao,-1).conj()
+#:v4 = numpy.einsum('iLj,lLk->ijkl', pqk, pqk.conj())
+#:vk += numpy.einsum('ijkl,li->kj', v4, dm)
+            if swap_2e and not is_zero(kpt):
+                iLkR = iLkR.reshape(nao,-1)
+                iLkI = iLkI.reshape(nao,-1)
                 for i in range(nset):
-                    prk = lib.dot(dms[i,ki].T, srk.reshape(nao,-1)).reshape(nao,nao,-1)
-                    vk_kpts[i,kj] += numpy.einsum('prk,pqk->rq', prk, pqk)
-                    prk = None
-                srk = pqk = None
+                    iLkR, iLkI = zdotNN(dmsR[i,ki], dmsI[i,ki], pLqR.reshape(nao,-1),
+                                        pLqI.reshape(nao,-1), 1, iLkR, iLkI)
+                    zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
+                           iLkR.reshape(-1,nao), iLkI.reshape(-1,nao),
+                           1, vkR[i,kj], vkI[i,kj], 1)
 
-        LpqR = LpqI = pqkR = LkR = pqkI = LkI = coulG = None
+        pqkR = pqkI = iLkR = iLkI = coulG = None
+
+        # Note: kj-ki for electorn 1 and ki-kj for electron 2
+        # j2c ~ ({kj-ki}|{ks-kr}) ~ ({kj-ki}|-{kj-ki}) ~ ({kj-ki}|{ki-kj})
+        # j3c ~ (Q|kj,ki) = j3c{ji} = (Q|ki,kj)* = conj(transpose(j3c{ij}, (0,2,1)))
+
+        if rank == 0:
+            bufR = numpy.empty((mydf.blockdim*nao**2))
+            bufI = numpy.empty((mydf.blockdim*nao**2))
+            for ki,kj in zip(kpti_idx,kptj_idx):
+                kpti = kpts_band[ki]
+                kptj = kpts[kj]
+                kptij = numpy.asarray((kpti,kptj))
+                for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptij, max_memory, False, True):
+                    nrow = LpqR.shape[1]
+                    tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
+                    tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
+                    # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
+                    for i in range(nset):
+                        tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], j3cR.reshape(nao,-1),
+                                            j3cI.reshape(nao,-1), 1, tmpR, tmpI)
+                        vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
+                                            tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
+                        vkR[i,kj] += vk1R
+                        vkI[i,kj] += vk1I
+                        if hermi:
+                            vkR[i,kj] += vk1R.T
+                            vkI[i,kj] -= vk1I.T
+                        else:
+                            tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], LpqR.reshape(nao,-1),
+                                                LpqI.reshape(nao,-1), 1, tmpR, tmpI)
+                            zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
+                                   tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                                   1, vkR[i,kj], vkI[i,kj], 1)
+
+                    if swap_2e and not is_zero(kpt):
+                        tmpR = numpy.ndarray((nao*nrow,nao), buffer=bufR)
+                        tmpI = numpy.ndarray((nao*nrow,nao), buffer=bufI)
+                        # K ~ 'iLj,lLk*,jk->il' + 'lLk*,iLj,jk->il'
+                        for i in range(nset):
+                            tmpR, tmpI = zdotNN(j3cR.reshape(-1,nao), j3cI.reshape(-1,nao),
+                                                dmsR[i,kj], dmsI[i,kj], 1, tmpR, tmpI)
+                            vk1R, vk1I = zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
+                                                LpqR.reshape(nao,-1).T, LpqI.reshape(nao,-1).T)
+                            vkR[i,ki] += vk1R
+                            vkI[i,ki] += vk1I
+                            if hermi:
+                                vkR[i,ki] += vk1R.T
+                                vkI[i,ki] -= vk1I.T
+                            else:
+                                tmpR, tmpI = zdotNN(LpqR.reshape(-1,nao), LpqI.reshape(-1,nao),
+                                                    dmsR[i,kj], dmsI[i,kj], 1, tmpR, tmpI)
+                                zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
+                                       j3cR.reshape(nao,-1).T, j3cI.reshape(nao,-1).T,
+                                       1, vkR[i,ki], vkI[i,ki], 1)
         return None
 
-    uniq_kptji = mdf._unique_kpt_ji(kpts)
-    kptji_on_node = mpi.static_partition(uniq_kptji)
-    if len(kptji_on_node) > 0:
+    for ki, kpti in enumerate(kpts_band):
         for kj, kptj in enumerate(kpts):
-            for ki, kpti in enumerate(kpts_band):
-                kpt = kptj - kpti
-                on_node = numpy.min(numpy.einsum('ki->k', abs(kptji_on_node-kpt))) < 1e-9
-                if on_node and kk_todo[ki,kj]:
-                    make_kpt(kpt)
+            if kk_todo[ki,kj]:
+                make_kpt(kptj-kpti)
 
-    vk_kpts = mpi.reduce(vk_kpts)
+    vkR = mpi.reduce(vkR)
+    vkI = mpi.reduce(vkI)
     if rank == 0:
+        if (gamma_point(kpts) and gamma_point(kpts_band) and
+            not numpy.iscomplexobj(dm_kpts)):
+            vk_kpts = vkR
+        else:
+            vk_kpts = vkR + vkI * 1j
         vk_kpts *= 1./nkpts
-        if abs(kpts).sum() < 1e-9 and abs(kpts_band).sum() < 1e-9:
-            vk_kpts = vk_kpts.real
 
         if kpt_band is not None and numpy.shape(kpt_band) == (3,):
-            if dm_kpts.ndim == 3:  # One set of dm_kpts for KRHF
+            if nset == 1:  # One set of dm_kpts for KRHF
                 return vk_kpts[0,0]
             else:
                 return vk_kpts[:,0]
@@ -419,139 +410,145 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     dms = pwdf_jk._format_dms(dm, [kpt])
     nset, _, nao = dms.shape[:3]
     dms = dms.reshape(nset,nao,nao)
+    j_real = gamma_point(kpt)
+    k_real = gamma_point(kpt) and not numpy.iscomplexobj(dms)
 
     auxcell = mydf.auxcell
     naux = auxcell.nao_nr()
-    nao_pair = nao * (nao+1) // 2
     kptii = numpy.asarray((kpt,kpt))
     kpt_allow = numpy.zeros(3)
-    gamma_point = abs(kpt).sum() < 1e-9
-
-    if rank == 0:
-        for Lpq in mydf.load_Lpq(kptii):
-            if Lpq.shape[1] == nao_pair:
-                Lpq = lib.unpack_tril(Lpq)
-        for jpq in mydf.load_j3c(kptii):
-            if jpq.shape[1] == nao_pair:
-                jpq = lib.unpack_tril(jpq)
-
-        # j2c is real because for i,j,k,l, same kpt is applied
-        j2c = auxcell.pbc_intor('cint2c2e_sph', 1, lib.HERMITIAN)
-        if with_j:
-            rho_coeff = lib.asarray([numpy.einsum('kij,ji->k', Lpq, dm) for dm in dms])
-            jaux = lib.asarray([numpy.einsum('kij,ji->k', jpq, dm) for dm in dms])
-            jaux -= numpy.dot(rho_coeff, j2c.T)
-            rho_coeff = rho_coeff.real.copy()
-            jaux = jaux.real.copy()
-
-        if with_k:
-            vk = numpy.empty((nset,nao,nao), dtype=numpy.complex128)
-            if hermi == lib.HERMITIAN:
-                tmp = lib.dot(j2c, Lpq.reshape(naux,-1), -.5).reshape(-1,nao,nao)
-                tmp += jpq
-                for i in range(nset):
-                    Lpi = lib.dot(Lpq.reshape(-1,nao), dms[i]).reshape(-1,nao,nao)
-                    vk[i] = numpy.einsum('Lpi,Liq->pq', Lpi, tmp)
-                    vk[i] += vk[i].T.conj()
-            else:
-                tmp = lib.dot(j2c, Lpq.reshape(naux,-1), -1).reshape(-1,nao,nao)
-                tmp += jpq
-                for i in range(nset):
-                    Lpi = lib.dot(Lpq.reshape(-1,nao), dms[i]).reshape(-1,nao,nao)
-                    vk[i] = numpy.einsum('Lpi,Liq->pq', Lpi, tmp)
-                    tmp = lib.dot(jpq.reshape(-1,nao), dms[i]).reshape(-1,nao,nao)
-                    vk[i] += numpy.einsum('Lpi,Liq->pq', tmp, Lpq)
-            Lpi = tmp = None
-            LpqR = numpy.asarray(Lpq.real, order='C')
-            LpqI = numpy.asarray(Lpq.imag, order='C')
-        j2c = None
-    else:
-        if with_j:
-            rho_coeff = None
-            jaux = numpy.zeros((nset,naux))
-        if with_k:
-            vk = numpy.zeros((nset,nao,nao), dtype=numpy.complex128)
-            LpqR = LpqI = None
 
     if with_j:
-        rho_coeff = mpi.bcast(rho_coeff)
         vjcoulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
+        vjR = numpy.zeros((nset,nao**2))
+        vjI = numpy.zeros((nset,nao**2))
     if with_k:
-        LpqR = mpi.bcast(LpqR)
-        LpqI = mpi.bcast(LpqI)
         vkcoulG = tools.get_coulG(cell, kpt_allow, True, mydf, mydf.gs) / cell.vol
-
-    dmsR = dms.real.reshape(nset,nao**2)
-    dmsI = dms.imag.reshape(nset,nao**2)
-    vjR = numpy.zeros((nset,nao**2))
-    vjI = numpy.zeros((nset,nao**2))
+        vkR = numpy.zeros((nset,nao,nao))
+        vkI = numpy.zeros((nset,nao,nao))
+    dmsR = dms.real.reshape(nset,nao,nao)
+    dmsI = dms.imag.reshape(nset,nao,nao)
     max_memory = (mydf.max_memory - lib.current_memory()[0]) * .8
+
     # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
     #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
-    for pqkR, LkR, pqkI, LkI, p0, p1 \
-            in mydf.mpi_pw_loop(cell, auxcell, mydf.gs, kptii, max_memory):
+    for pqkR, pqkI, p0, p1 \
+            in mydf.mpi_pw_loop(cell, mydf.gs, kptii, max_memory=max_memory):
         if with_j:
             for i in range(nset):
-                rhoR = numpy.dot(dmsR[i], pqkR)
-                rhoR-= numpy.dot(dmsI[i], pqkI)
-                rhoR-= numpy.dot(rho_coeff[i], LkR)
-                rhoI = numpy.dot(dmsR[i], pqkI)
-                rhoI+= numpy.dot(dmsI[i], pqkR)
-                rhoI-= numpy.dot(rho_coeff[i], LkI)
-                rhoR *= vjcoulG[p0:p1]
-                rhoI *= vjcoulG[p0:p1]
-                if not gamma_point:
+                if j_real:
+                    rhoR = numpy.dot(dmsR[i].ravel(), pqkR)
+                    rhoI = numpy.dot(dmsR[i].ravel(), pqkI)
+                    rhoR *= vjcoulG[p0:p1]
+                    rhoI *= vjcoulG[p0:p1]
+                    vjR[i] += numpy.dot(pqkR, rhoR)
+                    vjR[i] += numpy.dot(pqkI, rhoI)
+                else:
+                    rhoR = numpy.dot(dmsR[i].ravel(), pqkR)
+                    rhoR+= numpy.dot(dmsI[i].ravel(), pqkI)
+                    rhoI = numpy.dot(dmsI[i].ravel(), pqkR)
+                    rhoI-= numpy.dot(dmsR[i].ravel(), pqkI)
+                    rhoR *= vjcoulG[p0:p1]
+                    rhoI *= vjcoulG[p0:p1]
+                    vjR[i] += numpy.dot(pqkR, rhoR)
+                    vjR[i] -= numpy.dot(pqkI, rhoI)
+                    vjI[i] += numpy.dot(pqkR, rhoI)
                     vjI[i] += numpy.dot(pqkI, rhoR)
-                    vjI[i] -= numpy.dot(pqkR, rhoI)
-                    jaux[i] -= numpy.dot(LkI, rhoR) * 1j
-                    jaux[i] += numpy.dot(LkR, rhoI) * 1j
-                vjR[i] += numpy.dot(pqkR, rhoR)
-                vjR[i] += numpy.dot(pqkI, rhoI)
-                jaux[i] -= numpy.dot(LkR, rhoR)
-                jaux[i] -= numpy.dot(LkI, rhoI)
 
         if with_k:
             coulG = numpy.sqrt(vkcoulG[p0:p1])
-            lib.dot(LpqR.reshape(naux,-1).T, LkR, -1, pqkR, 1)
-            lib.dot(LpqI.reshape(naux,-1).T, LkI,  1, pqkR, 1)
             pqkR *= coulG
-            lib.dot(LpqI.reshape(naux,-1).T, LkR, -1, pqkI, 1)
-            lib.dot(LpqR.reshape(naux,-1).T, LkI, -1, pqkI, 1)
             pqkI *= coulG
             #:v4 = numpy.einsum('ijL,lkL->ijkl', pqk, pqk.conj())
             #:vk += numpy.einsum('ijkl,jk->il', v4, dm)
-            rsk =(pqkR.reshape(nao,nao,-1).transpose(1,0,2) -
-                  pqkI.reshape(nao,nao,-1).transpose(1,0,2)*1j)
-            pqk =(pqkR+pqkI*1j).reshape(nao,nao,-1)
+            pLqR = lib.transpose(pqkR.reshape(nao,nao,-1), axes=(0,2,1)).reshape(-1,nao)
+            pLqI = lib.transpose(pqkI.reshape(nao,nao,-1), axes=(0,2,1)).reshape(-1,nao)
+            iLkR = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkR)
+            iLkI = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkI)
             for i in range(nset):
-                qsk = numpy.dot(dms[i], rsk.reshape(nao,-1)).reshape(nao,nao,-1)
-                vk[i] += numpy.einsum('ijG,jlG->il', pqk, qsk)
-    pqkR = LkR = pqkI = LkI = coulG = None
+                iLkR, iLkI = zdotNN(pLqR, pLqI, dmsR[i], dmsI[i], 1, iLkR, iLkI)
+                vkR[i] += lib.dot(iLkR.reshape(nao,-1), pLqR.reshape(nao,-1).T)
+                vkR[i] += lib.dot(iLkI.reshape(nao,-1), pLqI.reshape(nao,-1).T)
+                if not k_real:
+                    vkI[i] += lib.dot(iLkI.reshape(nao,-1), pLqR.reshape(nao,-1).T)
+                    vkI[i] -= lib.dot(iLkR.reshape(nao,-1), pLqI.reshape(nao,-1).T)
+    pqkR = pqkI = coulG = None
 
     if with_j:
-        if gamma_point:
-            vj = vjR
-        else:
-            vj = vjR + vjI * 1j
-        vj = mpi.reduce(vj)
-        jaux = mpi.reduce(lib.asarray(jaux))
-        if rank == 0:
-            vj += numpy.dot(jaux, Lpq.reshape(naux,-1))
-            vj += numpy.dot(rho_coeff, jpq.reshape(naux,-1))
-            vj = vj.reshape(dm.shape)
-
+        vjR = mpi.reduce(vjR)
+        vjI = mpi.reduce(vjI)
     if with_k:
-        vk = mpi.reduce(vk)
-        if rank == 0:
-            if gamma_point:
-                vk = vk.real
+        vkR = mpi.reduce(vkR)
+        vkI = mpi.reduce(vkI)
+    if rank == 0:
+        bufR = numpy.empty((mydf.blockdim*nao**2))
+        bufI = numpy.empty((mydf.blockdim*nao**2))
+        if with_j:
+            vjR = vjR.reshape(nset,nao,nao)
+            vjI = vjI.reshape(nset,nao,nao)
+        for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, True):
+            if with_j:
+                rhoR  = numpy.einsum('pLq,xpq->xL', LpqR, dmsR)
+                rhoR -= numpy.einsum('pLq,xpq->xL', LpqI, dmsI)
+                rhoI  = numpy.einsum('pLq,xpq->xL', LpqR, dmsI)
+                rhoI += numpy.einsum('pLq,xpq->xL', LpqI, dmsR)
+                jauxR = numpy.einsum('pLq,xpq->xL', j3cR, dmsR)
+                jauxR-= numpy.einsum('pLq,xpq->xL', j3cI, dmsI)
+                jauxI = numpy.einsum('pLq,xpq->xL', j3cR, dmsI)
+                jauxI+= numpy.einsum('pLq,xpq->xL', j3cI, dmsR)
+                vjR += numpy.einsum('xL,pLq->pq', jauxR, LpqR)
+                vjR -= numpy.einsum('xL,pLq->pq', jauxI, LpqI)
+                vjI += numpy.einsum('xL,pLq->pq', jauxR, LpqI)
+                vjI += numpy.einsum('xL,pLq->pq', jauxI, LpqR)
+                vjR += numpy.einsum('xL,pLq->pq', rhoR, j3cR)
+                vjR -= numpy.einsum('xL,pLq->pq', rhoI, j3cI)
+                vjI += numpy.einsum('xL,pLq->pq', rhoR, j3cI)
+                vjI += numpy.einsum('xL,pLq->pq', rhoI, j3cR)
+
+            if with_k:
+                nrow = LpqR.shape[1]
+                tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
+                tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
+                # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
+                for i in range(nset):
+                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], j3cR.reshape(nao,-1),
+                                        j3cI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                    vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
+                                        tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
+                    vkR[i] += vk1R
+                    vkI[i] += vk1I
+                    if hermi:
+                        vkR[i] += vk1R.T
+                        vkI[i] -= vk1I.T
+                    else:
+                        tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], LpqR.reshape(nao,-1),
+                                            LpqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                        zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
+                               tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                               1, vkR[i], vkI[i], 1)
+        if with_j:
+            if j_real:
+                vj = vjR
+            else:
+                vj = vjR + vjI * 1j
+            vj = vj.reshape(dm.shape)
+        if with_k:
+            if k_real:
+                vk = vkR
+            else:
+                vk = vkR + vkI * 1j
             vk = vk.reshape(dm.shape)
-    return vj, vk
+        t1 = log.timer('sr jk', *t1)
+        return vj, vk
 
 
 def _load_df(reg_keys):
     mydf = mpi._registry[reg_keys[rank]]
     return mydf
+
+def is_zero(kpt):
+    return kpt is None or abs(kpt).sum() < 1e-9
+gamma_point = is_zero
 
 
 if __name__ == '__main__':
