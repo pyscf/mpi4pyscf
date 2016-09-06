@@ -97,8 +97,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     vI = numpy.zeros((nset,ngs))
     max_memory = mydf.max_memory - lib.current_memory()[0]
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.mpi_ft_loop(cell, mydf.gs, kpt_allow, kpts,
-                                max_memory=max_memory):
+            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts, max_memory=max_memory):
         # contract dm to rho_rs(-G+k_rs)  (Note no .T on dm)
         # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
         #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
@@ -126,8 +125,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     vjR = numpy.zeros((nset,nband,nao*nao))
     vjI = numpy.zeros((nset,nband,nao*nao))
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.mpi_ft_loop(cell, mydf.gs, kpt_allow, kpts_band,
-                            max_memory=max_memory):
+            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts_band, max_memory=max_memory):
         for i in range(nset):
             vjR[i,k] += numpy.dot(pqkR, vR[i,p0:p1])
             vjR[i,k] -= numpy.dot(pqkI, vI[i,p0:p1])
@@ -136,58 +134,58 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
                 vjI[i,k] += numpy.dot(pqkR, vI[i,p0:p1])
         pqkR = pqkI = coulG = None
 
+    rhoR  = numpy.zeros((nset,naux))
+    rhoI  = numpy.zeros((nset,naux))
+    jauxR = numpy.zeros((nset,naux))
+    jauxI = numpy.zeros((nset,naux))
+    for k, kpt in enumerate(kpts_band):
+        kptii = numpy.asarray((kpt,kpt))
+        p1 = 0
+        for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, False):
+            p0, p1 = p1, p1+LpqR.shape[0]
+            #:Lpq = (LpqR + LpqI*1j).transpose(1,0,2)
+            #:j3c = (j3cR + j3cI*1j).transpose(1,0,2)
+            #:rho [:,p0:p1] += numpy.einsum('Lpq,xpq->xL', Lpq, dms[:,k])
+            #:jaux[:,p0:p1] += numpy.einsum('Lpq,xpq->xL', j3c, dms[:,k])
+            rhoR [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsR[:,k])
+            rhoR [:,p0:p1]-= numpy.einsum('Lp,xp->xL', LpqI, dmsI[:,k])
+            rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsI[:,k])
+            rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqI, dmsR[:,k])
+            jauxR[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsR[:,k])
+            jauxR[:,p0:p1]-= numpy.einsum('Lp,xp->xL', j3cI, dmsI[:,k])
+            jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsI[:,k])
+            jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cI, dmsR[:,k])
+
+    weight = 1./nkpts
+    jauxR *= weight
+    jauxI *= weight
+    rhoR  *= weight
+    rhoI  *= weight
+    vjR = vjR.reshape(nset,nband,nao,nao)
+    vjI = vjI.reshape(nset,nband,nao,nao)
+    for k, kpt in enumerate(kpts_band):
+        kptii = numpy.asarray((kpt,kpt))
+        p1 = 0
+        for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, True, False):
+            p0, p1 = p1, p1+LpqR.shape[0]
+            #:v = numpy.dot(jaux, Lpq) + numpy.dot(rho, j3c)
+            #:vj_kpts[:,k] += lib.unpack_tril(v)
+            v  = numpy.dot(jauxR[:,p0:p1], LpqR)
+            v -= numpy.dot(jauxI[:,p0:p1], LpqI)
+            v += numpy.dot(rhoR [:,p0:p1], j3cR)
+            v -= numpy.dot(rhoI [:,p0:p1], j3cI)
+            vjR[:,k] += lib.unpack_tril(v)
+            if not j_real:
+                v  = numpy.dot(jauxR[:,p0:p1], LpqI)
+                v += numpy.dot(jauxI[:,p0:p1], LpqR)
+                v += numpy.dot(rhoR [:,p0:p1], j3cI)
+                v += numpy.dot(rhoI [:,p0:p1], j3cR)
+                vjI[:,k] += lib.unpack_tril(v, lib.ANTIHERMI)
+    t1 = log.timer_debug1('get_j pass 2', *t1)
+
     vjR = mpi.reduce(vjR)
     vjI = mpi.reduce(vjI)
     if rank == 0:
-        rhoR  = numpy.zeros((nset,naux))
-        rhoI  = numpy.zeros((nset,naux))
-        jauxR = numpy.zeros((nset,naux))
-        jauxI = numpy.zeros((nset,naux))
-        for k, kpt in enumerate(kpts_band):
-            kptii = numpy.asarray((kpt,kpt))
-            p1 = 0
-            for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, False):
-                p0, p1 = p1, p1+LpqR.shape[1]
-                #:Lpq = (LpqR + LpqI*1j).transpose(1,0,2)
-                #:j3c = (j3cR + j3cI*1j).transpose(1,0,2)
-                #:rho [:,p0:p1] += numpy.einsum('Lpq,xpq->xL', Lpq, dms[:,k])
-                #:jaux[:,p0:p1] += numpy.einsum('Lpq,xpq->xL', j3c, dms[:,k])
-                rhoR [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsR[:,k])
-                rhoR [:,p0:p1]-= numpy.einsum('Lp,xp->xL', LpqI, dmsI[:,k])
-                rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqR, dmsI[:,k])
-                rhoI [:,p0:p1]+= numpy.einsum('Lp,xp->xL', LpqI, dmsR[:,k])
-                jauxR[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsR[:,k])
-                jauxR[:,p0:p1]-= numpy.einsum('Lp,xp->xL', j3cI, dmsI[:,k])
-                jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsI[:,k])
-                jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cI, dmsR[:,k])
-
-        weight = 1./nkpts
-        jauxR *= weight
-        jauxI *= weight
-        rhoR *= weight
-        rhoI *= weight
-        vjR = vjR.reshape(nset,nband,nao,nao)
-        vjI = vjI.reshape(nset,nband,nao,nao)
-        for k, kpt in enumerate(kpts_band):
-            kptii = numpy.asarray((kpt,kpt))
-            p1 = 0
-            for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, True, False):
-                p0, p1 = p1, p1+LpqR.shape[1]
-                #:v = numpy.dot(jaux, Lpq) + numpy.dot(rho, j3c)
-                #:vj_kpts[:,k] += lib.unpack_tril(v)
-                v  = numpy.dot(jauxR[:,p0:p1], LpqR)
-                v -= numpy.dot(jauxI[:,p0:p1], LpqI)
-                v += numpy.dot(rhoR [:,p0:p1], j3cR)
-                v -= numpy.dot(rhoI [:,p0:p1], j3cI)
-                vjR[:,k] += lib.unpack_tril(v)
-                if not j_real:
-                    v  = numpy.dot(jauxR[:,p0:p1], LpqI)
-                    v += numpy.dot(jauxI[:,p0:p1], LpqR)
-                    v += numpy.dot(rhoR [:,p0:p1], j3cI)
-                    v += numpy.dot(rhoI [:,p0:p1], j3cR)
-                    vjI[:,k] += lib.unpack_tril(v, lib.ANTIHERMI)
-        t1 = log.timer_debug1('get_j pass 2', *t1)
-
         if j_real:
             vj_kpts = vjR
         else:
@@ -234,7 +232,6 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
     nband = len(kpts_band)
     kk_table = kpts_band.reshape(-1,1,3) - kpts.reshape(1,-1,3)
     kk_todo = numpy.ones(kk_table.shape[:2], dtype=bool)
-    vk_kpts = numpy.zeros((nset,nband,nao,nao), dtype=numpy.complex128)
     vkR = numpy.zeros((nset,nband,nao,nao))
     vkI = numpy.zeros((nset,nband,nao,nao))
     dmsR = numpy.asarray(dms.real, order='C')
@@ -258,7 +255,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         kptjs = kpts[kptj_idx]
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
         for k, pqkR, pqkI, p0, p1 \
-                in mydf.mpi_ft_loop(cell, mydf.gs, kpt, kptjs, max_memory=max_memory):
+                in mydf.ft_loop(cell, mydf.gs, kpt, kptjs, max_memory=max_memory):
             ki = kpti_idx[k]
             kj = kptj_idx[k]
             coulG = numpy.sqrt(vkcoulG[p0:p1])
@@ -298,55 +295,54 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         # j2c ~ ({kj-ki}|{ks-kr}) ~ ({kj-ki}|-{kj-ki}) ~ ({kj-ki}|{ki-kj})
         # j3c ~ (Q|kj,ki) = j3c{ji} = (Q|ki,kj)* = conj(transpose(j3c{ij}, (0,2,1)))
 
-        if rank == 0:
-            bufR = numpy.empty((mydf.blockdim*nao**2))
-            bufI = numpy.empty((mydf.blockdim*nao**2))
-            for ki,kj in zip(kpti_idx,kptj_idx):
-                kpti = kpts_band[ki]
-                kptj = kpts[kj]
-                kptij = numpy.asarray((kpti,kptj))
-                for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptij, max_memory, False, True):
-                    nrow = LpqR.shape[1]
-                    tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
-                    tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
-                    # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
-                    for i in range(nset):
-                        tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], j3cR.reshape(nao,-1),
-                                            j3cI.reshape(nao,-1), 1, tmpR, tmpI)
-                        vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
-                                            tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
-                        vkR[i,kj] += vk1R
-                        vkI[i,kj] += vk1I
-                        if hermi:
-                            vkR[i,kj] += vk1R.T
-                            vkI[i,kj] -= vk1I.T
-                        else:
-                            tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], LpqR.reshape(nao,-1),
-                                                LpqI.reshape(nao,-1), 1, tmpR, tmpI)
-                            zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
-                                   tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
-                                   1, vkR[i,kj], vkI[i,kj], 1)
+        bufR = numpy.empty((mydf.blockdim*nao**2))
+        bufI = numpy.empty((mydf.blockdim*nao**2))
+        for ki,kj in zip(kpti_idx,kptj_idx):
+            kpti = kpts_band[ki]
+            kptj = kpts[kj]
+            kptij = numpy.asarray((kpti,kptj))
+            for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptij, max_memory, False, True):
+                nrow = LpqR.shape[1]
+                tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
+                tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
+                # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
+                for i in range(nset):
+                    tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], j3cR.reshape(nao,-1),
+                                        j3cI.reshape(nao,-1), 1, tmpR, tmpI)
+                    vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
+                                        tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
+                    vkR[i,kj] += vk1R
+                    vkI[i,kj] += vk1I
+                    if hermi:
+                        vkR[i,kj] += vk1R.T
+                        vkI[i,kj] -= vk1I.T
+                    else:
+                        tmpR, tmpI = zdotNN(dmsR[i,ki], dmsI[i,ki], LpqR.reshape(nao,-1),
+                                            LpqI.reshape(nao,-1), 1, tmpR, tmpI)
+                        zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
+                               tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                               1, vkR[i,kj], vkI[i,kj], 1)
 
-                    if swap_2e and not is_zero(kpt):
-                        tmpR = numpy.ndarray((nao*nrow,nao), buffer=bufR)
-                        tmpI = numpy.ndarray((nao*nrow,nao), buffer=bufI)
-                        # K ~ 'iLj,lLk*,jk->il' + 'lLk*,iLj,jk->il'
-                        for i in range(nset):
-                            tmpR, tmpI = zdotNN(j3cR.reshape(-1,nao), j3cI.reshape(-1,nao),
+                if swap_2e and not is_zero(kpt):
+                    tmpR = numpy.ndarray((nao*nrow,nao), buffer=bufR)
+                    tmpI = numpy.ndarray((nao*nrow,nao), buffer=bufI)
+                    # K ~ 'iLj,lLk*,jk->il' + 'lLk*,iLj,jk->il'
+                    for i in range(nset):
+                        tmpR, tmpI = zdotNN(j3cR.reshape(-1,nao), j3cI.reshape(-1,nao),
+                                            dmsR[i,kj], dmsI[i,kj], 1, tmpR, tmpI)
+                        vk1R, vk1I = zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
+                                            LpqR.reshape(nao,-1).T, LpqI.reshape(nao,-1).T)
+                        vkR[i,ki] += vk1R
+                        vkI[i,ki] += vk1I
+                        if hermi:
+                            vkR[i,ki] += vk1R.T
+                            vkI[i,ki] -= vk1I.T
+                        else:
+                            tmpR, tmpI = zdotNN(LpqR.reshape(-1,nao), LpqI.reshape(-1,nao),
                                                 dmsR[i,kj], dmsI[i,kj], 1, tmpR, tmpI)
-                            vk1R, vk1I = zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
-                                                LpqR.reshape(nao,-1).T, LpqI.reshape(nao,-1).T)
-                            vkR[i,ki] += vk1R
-                            vkI[i,ki] += vk1I
-                            if hermi:
-                                vkR[i,ki] += vk1R.T
-                                vkI[i,ki] -= vk1I.T
-                            else:
-                                tmpR, tmpI = zdotNN(LpqR.reshape(-1,nao), LpqI.reshape(-1,nao),
-                                                    dmsR[i,kj], dmsI[i,kj], 1, tmpR, tmpI)
-                                zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
-                                       j3cR.reshape(nao,-1).T, j3cI.reshape(nao,-1).T,
-                                       1, vkR[i,ki], vkI[i,ki], 1)
+                            zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
+                                   j3cR.reshape(nao,-1).T, j3cI.reshape(nao,-1).T,
+                                   1, vkR[i,ki], vkI[i,ki], 1)
         return None
 
     for ki, kpti in enumerate(kpts_band):
@@ -433,7 +429,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
     #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
     for pqkR, pqkI, p0, p1 \
-            in mydf.mpi_pw_loop(cell, mydf.gs, kptii, max_memory=max_memory):
+            in mydf.pw_loop(cell, mydf.gs, kptii, max_memory=max_memory):
         if with_j:
             for i in range(nset):
                 if j_real:
@@ -474,6 +470,51 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                     vkI[i] -= lib.dot(iLkR.reshape(nao,-1), pLqI.reshape(nao,-1).T)
     pqkR = pqkI = coulG = None
 
+    bufR = numpy.empty((mydf.blockdim*nao**2))
+    bufI = numpy.empty((mydf.blockdim*nao**2))
+    if with_j:
+        vjR = vjR.reshape(nset,nao,nao)
+        vjI = vjI.reshape(nset,nao,nao)
+    for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, True):
+        if with_j:
+            rhoR  = numpy.einsum('pLq,xpq->xL', LpqR, dmsR)
+            rhoR -= numpy.einsum('pLq,xpq->xL', LpqI, dmsI)
+            rhoI  = numpy.einsum('pLq,xpq->xL', LpqR, dmsI)
+            rhoI += numpy.einsum('pLq,xpq->xL', LpqI, dmsR)
+            jauxR = numpy.einsum('pLq,xpq->xL', j3cR, dmsR)
+            jauxR-= numpy.einsum('pLq,xpq->xL', j3cI, dmsI)
+            jauxI = numpy.einsum('pLq,xpq->xL', j3cR, dmsI)
+            jauxI+= numpy.einsum('pLq,xpq->xL', j3cI, dmsR)
+            vjR += numpy.einsum('xL,pLq->pq', jauxR, LpqR)
+            vjR -= numpy.einsum('xL,pLq->pq', jauxI, LpqI)
+            vjI += numpy.einsum('xL,pLq->pq', jauxR, LpqI)
+            vjI += numpy.einsum('xL,pLq->pq', jauxI, LpqR)
+            vjR += numpy.einsum('xL,pLq->pq', rhoR, j3cR)
+            vjR -= numpy.einsum('xL,pLq->pq', rhoI, j3cI)
+            vjI += numpy.einsum('xL,pLq->pq', rhoR, j3cI)
+            vjI += numpy.einsum('xL,pLq->pq', rhoI, j3cR)
+
+        if with_k:
+            nrow = LpqR.shape[1]
+            tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
+            tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
+            # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
+            for i in range(nset):
+                tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], j3cR.reshape(nao,-1),
+                                    j3cI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
+                                    tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
+                vkR[i] += vk1R
+                vkI[i] += vk1I
+                if hermi:
+                    vkR[i] += vk1R.T
+                    vkI[i] -= vk1I.T
+                else:
+                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], LpqR.reshape(nao,-1),
+                                        LpqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                    zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
+                           tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                           1, vkR[i], vkI[i], 1)
     if with_j:
         vjR = mpi.reduce(vjR)
         vjI = mpi.reduce(vjI)
@@ -481,51 +522,6 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
         vkR = mpi.reduce(vkR)
         vkI = mpi.reduce(vkI)
     if rank == 0:
-        bufR = numpy.empty((mydf.blockdim*nao**2))
-        bufI = numpy.empty((mydf.blockdim*nao**2))
-        if with_j:
-            vjR = vjR.reshape(nset,nao,nao)
-            vjI = vjI.reshape(nset,nao,nao)
-        for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False, True):
-            if with_j:
-                rhoR  = numpy.einsum('pLq,xpq->xL', LpqR, dmsR)
-                rhoR -= numpy.einsum('pLq,xpq->xL', LpqI, dmsI)
-                rhoI  = numpy.einsum('pLq,xpq->xL', LpqR, dmsI)
-                rhoI += numpy.einsum('pLq,xpq->xL', LpqI, dmsR)
-                jauxR = numpy.einsum('pLq,xpq->xL', j3cR, dmsR)
-                jauxR-= numpy.einsum('pLq,xpq->xL', j3cI, dmsI)
-                jauxI = numpy.einsum('pLq,xpq->xL', j3cR, dmsI)
-                jauxI+= numpy.einsum('pLq,xpq->xL', j3cI, dmsR)
-                vjR += numpy.einsum('xL,pLq->pq', jauxR, LpqR)
-                vjR -= numpy.einsum('xL,pLq->pq', jauxI, LpqI)
-                vjI += numpy.einsum('xL,pLq->pq', jauxR, LpqI)
-                vjI += numpy.einsum('xL,pLq->pq', jauxI, LpqR)
-                vjR += numpy.einsum('xL,pLq->pq', rhoR, j3cR)
-                vjR -= numpy.einsum('xL,pLq->pq', rhoI, j3cI)
-                vjI += numpy.einsum('xL,pLq->pq', rhoR, j3cI)
-                vjI += numpy.einsum('xL,pLq->pq', rhoI, j3cR)
-
-            if with_k:
-                nrow = LpqR.shape[1]
-                tmpR = numpy.ndarray((nao,nrow*nao), buffer=bufR)
-                tmpI = numpy.ndarray((nao,nrow*nao), buffer=bufI)
-                # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
-                for i in range(nset):
-                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], j3cR.reshape(nao,-1),
-                                        j3cI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                    vk1R, vk1I = zdotCN(LpqR.reshape(-1,nao).T, LpqI.reshape(-1,nao).T,
-                                        tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
-                    vkR[i] += vk1R
-                    vkI[i] += vk1I
-                    if hermi:
-                        vkR[i] += vk1R.T
-                        vkI[i] -= vk1I.T
-                    else:
-                        tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], LpqR.reshape(nao,-1),
-                                            LpqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                        zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
-                               tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
-                               1, vkR[i], vkI[i], 1)
         if with_j:
             if j_real:
                 vj = vjR

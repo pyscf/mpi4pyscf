@@ -146,8 +146,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         vkcoulG = tools.get_coulG(cell, kpt, True, mydf, mydf.gs) / cell.vol
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
         for k, pqkR, pqkI, p0, p1 \
-                in mydf.mpi_ft_loop(cell, mydf.gs, kpt, kpts[kptj_idx],
-                                    max_memory=max_memory):
+                in mydf.ft_loop(cell, mydf.gs, kpt, kpts[kptj_idx], max_memory=max_memory):
             ki = kpti_idx[k]
             kj = kptj_idx[k]
             coulG = numpy.sqrt(vkcoulG[p0:p1])
