@@ -274,7 +274,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
     buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), 1),
-                     nao**2/mpi.pool.size))
+                     nao**2/mpi.pool.size+4*nao, nao**2))
     chunks = (min(int(max_memory*.6*1e6/buflen), naux), buflen)
 
     Lpq_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
@@ -474,7 +474,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         # buf for ft_aopair
-        buf = numpy.empty((nkptj,buflen*Gblksize), dtype=numpy.complex128)
+        buf = numpy.zeros((nkptj,buflen*Gblksize), dtype=numpy.complex128)
 
         if is_zero(kpt):  # kpti == kptj
             shls_slice = (sh0, sh1, 0, sh1)
