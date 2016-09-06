@@ -13,6 +13,7 @@ from pyscf.pbc.df.mdf_jk import zdotNN, zdotCN, zdotNC
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
+from mpi4pyscf.pbc.df.mdf_jk import _load_df
 
 comm = mpi.comm
 rank = mpi.rank
@@ -26,7 +27,8 @@ def get_eri(mydf, kpts=None, compact=True):
 def _get_eri_wrap(args):
     from mpi4pyscf.pbc.df import mdf_ao2mo
     return mdf_ao2mo._get_eri(*args)
-def _get_eri(mydf, kpts=None, compact=True):
+def _get_eri(reg_keys, kpts=None, compact=True):
+    mydf = _load_df(reg_keys)
     cell = mydf.cell
     if kpts is None:
         kptijkl = numpy.zeros((4,3))
@@ -62,6 +64,7 @@ def _get_eri(mydf, kpts=None, compact=True):
             pqkI *= vG
             lib.dot(pqkR, pqkR.T, 1, eriR, 1)
             lib.dot(pqkI, pqkI.T, 1, eriR, 1)
+
         if not compact:
             eriR = ao2mo.restore(1, eriR, nao).reshape(nao**2,-1)
         eriR = mpi.reduce(eriR)
@@ -146,13 +149,14 @@ def general(mydf, mo_coeffs, kpts=None, compact=True):
 def _general_wrap(args):
     from mpi4pyscf.pbc.df import mdf_ao2mo
     return mdf_ao2mo._general(*args)
-def _general(mydf, mo_coeffs, kpts=None, compact=True):
-    if isinstance(mo_coeffs, numpy.ndarray) and mo_coeffs.ndim == 2:
-        mo_coeffs = (mo_coeffs,) * 4
-
-    eri = mydf.get_eri(kpts)
+def _general(reg_keys, mo_coeffs, kpts=None, compact=True):
+    eri = _get_eri(reg_keys, kpts)
     if rank != 0:
         return
+
+    mydf = _load_df(reg_keys)
+    if isinstance(mo_coeffs, numpy.ndarray) and mo_coeffs.ndim == 2:
+        mo_coeffs = (mo_coeffs,) * 4
 
 ####################
 # gamma point, the integral is real and with s4 symmetry
