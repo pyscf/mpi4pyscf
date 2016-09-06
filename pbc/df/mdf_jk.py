@@ -213,6 +213,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                 kpts=numpy.zeros((1,3)), kpt_band=None):
     from mpi4pyscf.pbc.df import mdf
     mydf = _load_df(reg_keys)
+    mydf.exxdiv = comm.bcast(mydf.exxdiv)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
@@ -419,6 +420,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
         vjR = numpy.zeros((nset,nao**2))
         vjI = numpy.zeros((nset,nao**2))
     if with_k:
+        mydf.exxdiv = comm.bcast(mydf.exxdiv)
         vkcoulG = tools.get_coulG(cell, kpt_allow, True, mydf, mydf.gs) / cell.vol
         vkR = numpy.zeros((nset,nao,nao))
         vkI = numpy.zeros((nset,nao,nao))

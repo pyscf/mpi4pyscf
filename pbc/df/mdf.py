@@ -462,6 +462,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 j3cI.append(numpy.asarray(v.imag, order='C'))
             else:
                 j3cI.append(None)
+            v = None
 
         ncol = col1 - col0
         if is_zero(kpt):  # kpti == kptj
