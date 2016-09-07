@@ -74,15 +74,16 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
             vj_kpts = vj_kpts.reshape(nkpts,nset,nao,nao)
             return vj_kpts.transpose(1,0,2,3).reshape(dm_kpts.shape)
 
-def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
+def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
+               exxdiv=None):
+    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band, exxdiv)
+    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band, exxdiv)
     return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
 def _get_k_kpts_wrap(args):
     from mpi4pyscf.pbc.df import fft_jk
     return fft_jk._get_k_kpts(*args)
 def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None):
+                kpts=numpy.zeros((1,3)), kpt_band=None, exxdiv=None):
     mydf = _load_df(reg_keys)
     cell = mydf.cell
     gs = mydf.gs
@@ -106,7 +107,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         for k2, ao_k2 in mydf.mpi_aoR_loop(cell, gs, kpts):
             kpt2 = kpts[k2]
             vkR_k1k2 = fft_jk.get_vkR(mydf, cell, aoR_kband, ao_k2,
-                                      kpt_band, kpt2, coords, gs)
+                                      kpt_band, kpt2, coords, gs, exxdiv)
             #:vk_kpts = 1./nkpts * (cell.vol/ngs) * numpy.einsum('rs,Rp,Rqs,Rr->pq',
             #:            dm_kpts[k2], aoR_kband.conj(), vkR_k1k2, ao_k2)
             for i in range(nset):
@@ -131,7 +132,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             for k1, ao_k1 in mydf.aoR_loop(cell, gs, kpts):
                 kpt1 = kpts[k1]
                 vkR_k1k2 = fft_jk.get_vkR(mydf, cell, ao_k1, ao_k2,
-                                          kpt1, kpt2, coords, gs)
+                                          kpt1, kpt2, coords, gs, exxdiv)
                 for i in range(nset):
                     tmp_Rq = numpy.einsum('Rqs,Rs->Rq', vkR_k1k2, aoR_dms[i])
                     vk_kpts[i,k1] += weight * lib.dot(ao_k1.T.conj(), tmp_Rq)
@@ -141,10 +142,10 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             return vk_kpts.reshape(dm_kpts.shape)
 
 
-def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None):
+def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None, exxdiv=None):
     dm = numpy.asarray(dm, order='C')
     vj = get_j(mydf, dm, hermi, kpt, kpt_band)
-    vk = get_k(mydf, dm, hermi, kpt, kpt_band)
+    vk = get_k(mydf, dm, hermi, kpt, kpt_band, exxdiv)
     return vj, vk
 
 def get_j(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None):
@@ -154,17 +155,16 @@ def get_j(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None):
     vj = get_j_kpts(mydf, dm_kpts, hermi, [kpt], kpt_band)
     return vj.reshape(dm.shape)
 
-def get_k(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None):
+def get_k(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None, exxdiv=None):
     dm = numpy.asarray(dm, order='C')
     nao = dm.shape[-1]
     dm_kpts = dm.reshape(-1,1,nao,nao)
-    vk = get_k_kpts(mydf, dm_kpts, hermi, [kpt], kpt_band)
+    vk = get_k_kpts(mydf, dm_kpts, hermi, [kpt], kpt_band, exxdiv)
     return vk.reshape(dm.shape)
 
 def _load_df(reg_keys):
     mydf = mpi._registry[reg_keys[rank]]
-    mydf.kpts, mydf.gs, mydf.exxdiv = \
-            comm.bcast((mydf.kpts, mydf.gs, mydf.exxdiv))
+    mydf.kpts, mydf.gs = comm.bcast((mydf.kpts, mydf.gs))
     return mydf
 
 def _format_dms(dm_kpts, kpts):

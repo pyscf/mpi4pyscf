@@ -178,15 +178,13 @@ class MDF(mdf.MDF, pwdf.PWDF):
         else:
             kpts = numpy.asarray(kpts)
 
-        # Use DF object to mimic KRHF/KUHF object in function get_coulG
-        self.exxdiv = exxdiv
-
         if kpts.shape == (3,):
-            return mdf_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j, with_k)
+            return mdf_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
+                                 with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band)
+            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
         if with_j:
             vj = mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
         return vj, vk

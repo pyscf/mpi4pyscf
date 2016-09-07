@@ -101,15 +101,16 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
             return vj_kpts.reshape(dm_kpts.shape)
 
 
-def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
+def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
+               exxdiv=None):
+    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band, exxdiv)
+    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band, exxdiv)
     return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
 def _get_k_kpts_wrap(args):
     from mpi4pyscf.pbc.df import pwdf_jk
     return pwdf_jk._get_k_kpts(*args)
 def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None):
+                kpts=numpy.zeros((1,3)), kpt_band=None, exxdiv=None):
     mydf = _load_df(reg_keys)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -143,6 +144,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         if swap_2e and abs(kpt).sum() > 1e-9:
             kk_todo[kptj_idx,kpti_idx] = False
 
+        mydf.exxdiv = exxdiv
         vkcoulG = tools.get_coulG(cell, kpt, True, mydf, mydf.gs) / cell.vol
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
         for k, pqkR, pqkI, p0, p1 \
@@ -209,21 +211,21 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
 ##################################################
 
 def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
-           kpt_band=None, with_j=True, with_k=True):
-    master_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k)
-    worker_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k)
+           kpt_band=None, with_j=True, with_k=True, exxdiv=None):
+    master_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
+    worker_args = (mydf._reg_keys, None, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
     return mpi.pool.apply(_get_jk_wrap, master_args, worker_args)
 def _get_jk_wrap(args):
     from mpi4pyscf.pbc.df import pwdf_jk
     return pwdf_jk._get_jk(*args)
 def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
-            kpt_band=None, with_j=True, with_k=True):
+            kpt_band=None, with_j=True, with_k=True, exxdiv=None):
     '''JK for given k-point'''
     vj = vk = None
     if kpt_band is not None and abs(kpt-kpt_band).sum() > 1e-9:
         kpt = numpy.reshape(kpt, (1,3))
         if with_k:
-            vk = _get_k_kpts(reg_keys, [dm], hermi, kpt, kpt_band)
+            vk = _get_k_kpts(reg_keys, [dm], hermi, kpt, kpt_band, exxdiv)
         if with_j:
             vj = _get_j_kpts(reg_keys, [dm], hermi, kpt, kpt_band)
         return vj, vk
@@ -246,6 +248,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
         vjcoulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
     if with_k:
         vk = numpy.zeros((nset,nao,nao), dtype=numpy.complex128)
+        mydf.exxdiv = exxdiv
         vkcoulG = tools.get_coulG(cell, kpt_allow, True, mydf, mydf.gs) / cell.vol
 
     dmsR = dms.real.reshape(nset,nao**2)
@@ -299,8 +302,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
 
 def _load_df(reg_keys):
     mydf = mpi._registry[reg_keys[rank]]
-    mydf.kpts, mydf.gs, mydf.exxdiv = \
-            comm.bcast((mydf.kpts, mydf.gs, mydf.exxdiv))
+    mydf.kpts, mydf.gs = comm.bcast((mydf.kpts, mydf.gs))
     return mydf
 
 def _format_dms(dm_kpts, kpts):
