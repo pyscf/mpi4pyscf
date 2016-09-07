@@ -273,14 +273,14 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     max_memory = max(2000, min(comm.allgather(max_memory)))
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
-    buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), 1),
+    buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), nao),
                      nao**2/mpi.pool.size+4*nao, nao**2))
     chunks = (min(int(max_memory*.6*1e6/buflen), naux), buflen)
 
     Lpq_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
     j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
     fusion_jobs = grids2d_fusion_jobs(cell, auxcell, kptij_lst, chunks)
-    log.debug2('chunks %s', chunks)
+    log.debug1('max_memory = %s MB  chunks %s', max_memory, chunks)
     log.debug2('Lpq_jobs %s', Lpq_jobs)
     log.debug2('j3c_jobs %s', j3c_jobs)
     log.debug2('fusion_jobs %s', fusion_jobs)
@@ -732,7 +732,7 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
         feri = h5py.File(erifile, 'w')
 
     workers = numpy.zeros(len(all_jobs), dtype=int)
-    costs = [(aux_loc[k1]-aux_loc[k0])*(aux_loc[i1]-aux_loc[i0])
+    costs = [(aux_loc[k1]-aux_loc[k0])*(ao_loc[i1]-ao_loc[i0])
              for job_id, k0, k1, i0, i1 in all_jobs]
     for job_id, ksh0, ksh1, ish0, ish1 in mpi.work_balanced_partition(all_jobs, costs):
         dataname = '%s/%d' % (label, job_id)
