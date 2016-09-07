@@ -273,7 +273,8 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
     buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), nao),
                      nao**2/mpi.pool.size+4*nao, nao**2))
-    chunks = (min(int(max_memory*.6*1e6/buflen), naux), buflen)
+# total int3c_jobs are more than 4*mpi.pool.size
+    chunks = (min(naux, int(nao**2*naux/buflen/(mpi.pool.size*4))), buflen)
 
     Lpq_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
     j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
@@ -333,6 +334,9 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
     j_only = numpy.all(aosym_s2)
     fusion_workers = mpi.tasks_location(mpi.static_partition)(lib.flatten(fusion_jobs))
+    log.debug2('Lpq_workers %s', Lpq_workers)
+    log.debug2('j3c_workers %s', j3c_workers)
+    log.debug2('fusion_workers %s', fusion_workers)
     def loop_fusion_jobs(uniq_k_id):
         for job in fusion_jobs[uniq_k_id]:
             job_id = job[0]
@@ -340,16 +344,16 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
             col0, col1 = job[4:6]
             yield job_id, worker, col0, col1
 
-    def collect_chunks(keys, workers, dst):
+    def collect_chunks(keys, workers, dst, row0, row1):
         val = []
         for i, worker in enumerate(workers):
             if rank == dst:
                 if worker == dst:
-                    val.append(numpy.asarray(feri[keys[i]]))
+                    val.append(numpy.asarray(feri[keys[i]][row0:row1]))
                 else:
                     val.append(mpi.sendrecv(None, worker, dst))
             elif rank == worker:
-                mpi.sendrecv(numpy.asarray(feri[keys[i]]), worker, dst)
+                mpi.sendrecv(numpy.asarray(feri[keys[i]][row0:row1]), worker, dst)
         return val
 
     def distribute_int3c_s1(int3c_jobs, int3c_workers, col_id, label,
@@ -357,37 +361,43 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         job_ids = [jobs[col_id][0] for jobs in int3c_jobs]
         keys = ['%s-chunks/%d/%d' % (label, job_id, k) for job_id in job_ids]
         workers = [int3c_workers[job_id] for job_id in job_ids]
-        v = collect_chunks(keys, workers, worker_dst)
+        v = collect_chunks(keys, workers, worker_dst, 0, naux)
         if rank == worker_dst:
             return numpy.vstack(v)
 
     def distribute_int3c_s2(int3c_jobs, int3c_workers, label, k):
         uniq_k_id = uniq_inverse[k]
-        for row_id, jobs in enumerate(int3c_jobs):
+        for jobs in int3c_jobs:
             job_ids = [job[0] for job in jobs]
             keys = ['%s-chunks/%d/%d' % (label, job_id, k) for job_id in job_ids]
             workers = [int3c_workers[job_id] for job_id in job_ids]
-            v = collect_chunks(keys, workers, 0)
-
-            if rank == 0:
-                v = numpy.hstack(v).reshape(-1,nao,nao)
-                if j_only:
-                    tmp = numpy.asarray(v.transpose(0,2,1).conj(), order='C')
-                    v += tmp
-                    tmp = None
-                v = lib.pack_tril(v)
-
             ksh0, ksh1 = jobs[0][1:3]
-            row0, row1 = aux_loc[ksh0], aux_loc[ksh1]
-            for job_id, worker, col0, col1 in loop_fusion_jobs(uniq_k_id):
-                key = '%s-fus/%d/%d' % (label, job_id, k)
+            rowtot = aux_loc[ksh1] - aux_loc[ksh0]
+            rowblk = min(rowtot, int(max_memory*1e6/16/2/nao**2))
+            log.debug2('distribute_int3c_s2 kpt %d  (%d:%d) rowtot %d rowblk %d',
+                       k, ksh0, ksh1, rowtot, rowblk)
+
+            for p0, p1 in lib.prange(0, nrow, rowblk):
+                v = collect_chunks(keys, workers, 0, p0, p1)
                 if rank == 0:
-                    if worker == 0:
-                        feri[key][row0:row1] = v[:,col0:col1]
-                    else:
-                        mpi.sendrecv(v[:,col0:col1], 0, worker)
-                elif rank == worker:
-                    feri[key][row0:row1] = mpi.sendrecv(None, 0, worker)
+                    v = numpy.hstack(v).reshape(-1,nao,nao)
+                    if j_only:
+                        tmp = v.transpose(0,2,1).conj()
+                        v += tmp
+                        tmp = None
+                    v = lib.pack_tril(v)
+
+                row0 = p0 + aux_loc[ksh0]
+                row1 = p1 + aux_loc[ksh0]
+                for job_id, worker, col0, col1 in loop_fusion_jobs(uniq_k_id):
+                    key = '%s-fus/%d/%d' % (label, job_id, k)
+                    if rank == 0:
+                        if worker == 0:
+                            feri[key][row0:row1] = v[:,col0:col1]
+                        else:
+                            mpi.sendrecv(v[:,col0:col1], 0, worker)
+                    elif rank == worker:
+                        feri[key][row0:row1] = mpi.sendrecv(None, 0, worker)
     ####
     for k, kptij in enumerate(kptij_lst):
         uniq_k_id = uniq_inverse[k]
