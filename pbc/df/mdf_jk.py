@@ -244,9 +244,9 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         kk_match = numpy.einsum('ijx->ij', abs(kk_table + kpt)) < 1e-9
         kpti_idx, kptj_idx = numpy.where(kk_todo & kk_match)
         nkptj = len(kptj_idx)
-        log.debug1('kpt = %s', kpt)
-        log.debug1('kpti_idx = %s', kpti_idx)
-        log.debug1('kptj_idx = %s', kptj_idx)
+        log.debug1('kptj - kpti = %s', kpt)
+        log.debug2('kpti_idx = %s', kpti_idx)
+        log.debug2('kptj_idx = %s', kptj_idx)
         kk_todo[kpti_idx,kptj_idx] = False
         if swap_2e and not is_zero(kpt):
             kk_todo[kptj_idx,kpti_idx] = False
@@ -360,6 +360,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         else:
             vk_kpts = vkR + vkI * 1j
         vk_kpts *= 1./nkpts
+        t1 = log.timer_debug1('get_k', *t1)
 
         if kpt_band is not None and numpy.shape(kpt_band) == (3,):
             if nset == 1:  # One set of dm_kpts for KRHF
@@ -536,7 +537,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             else:
                 vk = vkR + vkI * 1j
             vk = vk.reshape(dm.shape)
-        t1 = log.timer('sr jk', *t1)
+        t1 = log.timer_debug1('sr jk', *t1)
         return vj, vk
 
 
