@@ -111,18 +111,22 @@ def _get_nuc(reg_keys, kpts=None):
     vG = numpy.einsum('i,xi,x->x', charge, aoaux[:,naux:], coulG)
     jaux -= numpy.einsum('x,xj->j', vG.real, aoaux[:,:naux].real)
     jaux -= numpy.einsum('x,xj->j', vG.imag, aoaux[:,:naux].imag)
-
     jaux -= charge.sum() * mydf.auxbar(auxcell)
-    row_segs = list(lib.prange(0, jaux.size, mydf.blockdim))
+    jobs = mpi.static_partition(range(naux))
+    jaux = jaux[jobs]
+
+    nao_pair = nao * (nao+1) // 2
+    max_memory = max(2000, mydf.max_memory-lib.current_memory()[0])
+    blksize = max(16, min(int(max_memory*1e6/16/nao_pair), mydf.blockdim))
+
     for k, kpt in enumerate(kpts_lst):
         with mydf.load_Lpq((kpt,kpt)) as Lpq:
-            v = 0
-            i1 = 0
-            for p0, p1 in mpi.static_partition(row_segs):
-                i0, i1 = i1, i1+p1-p0
-                v += numpy.dot(jaux[p0:p1], numpy.asarray(Lpq[i0:i1]))
-        if i1 > 0:
-            vj[k] += lib.unpack_tril(v)
+            nrow = Lpq.shape[0]
+            if nrow > 0:
+                v = 0
+                for p0, p1 in lib.prange(0, nrow, blksize):
+                    v += numpy.dot(jaux[p0:p1], numpy.asarray(Lpq[p0:p1]))
+                vj[k] += lib.unpack_tril(v)
 
     vj = mpi.reduce(lib.asarray(vj))
     if rank == 0:
@@ -255,8 +259,9 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     auxcell._atm, auxcell._bas, auxcell._env = \
             gto.conc_env(auxcell._atm, auxcell._bas, auxcell._env,
                          chgcell._atm, chgcell._bas, chgcell._env)
-    nao = cell.nao_nr()
+    ao_loc = cell.ao_loc_nr()
     aux_loc = auxcell.ao_loc_nr()
+    nao = ao_loc[-1]
     naux = aux_loc[-1]
     naux_short = auxcell_short.nao_nr()
     kptis = kptij_lst[:,0]
@@ -272,35 +277,27 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
     buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), nao),
-                     nao**2/mpi.pool.size+4*nao, nao**2))
-# total int3c_jobs are more than 4*mpi.pool.size
-    chunks = (min(naux, int(nao**2*naux/buflen/(mpi.pool.size*4))), buflen)
+                     nao**2/mpi.pool.size+3*nao, nao**2))
+    chunks = (buflen, nao)
 
-    Lpq_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
-    j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
-    fusion_jobs = grids2d_fusion_jobs(cell, auxcell, kptij_lst, chunks)
+    j3c_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
     log.debug1('max_memory = %s MB  chunks %s', max_memory, chunks)
-    log.debug2('Lpq_jobs %s', Lpq_jobs)
     log.debug2('j3c_jobs %s', j3c_jobs)
-    log.debug2('fusion_jobs %s', fusion_jobs)
 
     if mydf.metric.upper() == 'S':
-        Lpq_workers = _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst,
-                              lib.flatten(Lpq_jobs),
-                              'cint3c1e_sph', 'Lpq-chunks', max_memory)
+        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+                'cint3c1e_sph', 'Lpq-chunks', max_memory)
         s_aux = auxcell_short.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
     else:
-        Lpq_workers = _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst,
-                              lib.flatten(Lpq_jobs),
-                              'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
+        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+                'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
         s_aux = auxcell_short.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
         s_aux = [x*2 for x in s_aux]
     s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
     compress = mdf.compress_Lpq_to_chgcell(auxcell_short, chgcell)
     t1 = log.timer_debug1('Lpq', *t1)
 
-    j3c_workers = _aux_e2(cell, auxcell, mydf._cderi, kptij_lst,
-                          lib.flatten(j3c_jobs),
+    j3c_workers = _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
                           'cint3c2e_sph', 'j3c-chunks', max_memory)
     t1 = log.timer_debug1('3c2e', *t1)
     ####
@@ -314,146 +311,65 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     ngs = gxyz.shape[0]
     # j2c ~ (-kpt_ji | kpt_ji)
     j2c = auxcell.pbc_intor('cint2c2e_sph', hermi=1, kpts=uniq_kpts)
+    t1 = log.timer_debug1('2c2e', *t1)
     kLRs = []
     kLIs = []
     for k, kpt in enumerate(uniq_kpts):
         aoaux = ft_ao.ft_ao(auxcell, Gv, None, invh, gxyz, gs, kpt)
-        coulG = tools.get_coulG(cell, kpt, gs=gs) / cell.vol
-        aoauxG = aoaux * coulG.reshape(-1,1)
-        kLRs.append(numpy.asarray(aoauxG.real, order='C'))
-        kLIs.append(numpy.asarray(aoauxG.imag, order='C'))
+        coulG = numpy.sqrt(tools.get_coulG(cell, kpt, gs=gs) / cell.vol)
+        kLR = aoaux.real * coulG.reshape(-1,1)
+        kLI = aoaux.imag * coulG.reshape(-1,1)
+        if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
+        if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
+        aoaux = None
 
-        if is_zero(kpt):  # kpti == kptj
-            j2c[k] -= lib.dot(kLRs[-1].T, numpy.asarray(aoaux.real,order='C'))
-            j2c[k] -= lib.dot(kLIs[-1].T, numpy.asarray(aoaux.imag,order='C'))
-        else:
-             # aoaux ~ kpt_ij, aoaux.conj() ~ kpt_kl
-            j2c[k] -= lib.dot(aoauxG.conj().T, aoaux)
+        for p0, p1 in mydf.mpi_prange(0, ngs):
+            if is_zero(kpt):  # kpti == kptj
+                j2cR = lib.dot(kLR[p0:p1].T, kLR[p0:p1])
+                j2cR = lib.dot(kLI[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
+                j2c[k] -= mpi.allreduce(j2cR)
+            else:
+                 # aoaux ~ kpt_ij, aoaux.conj() ~ kpt_kl
+                j2cR, j2cI = zdotCN(kLR[p0:p1], kLI[p0:p1], kLR[p0:p1], kLI[p0:p1])
+                j2cR = mpi.allreduce(j2cR)
+                j2cI = mpi.allreduce(j2cI)
+                j2c[k] -= j2cR + j2cI * 1j
+        j2cR = j2cI = None
+
+        kLR *= coulG.reshape(-1,1)
+        kLI *= coulG.reshape(-1,1)
+        kLRs.append(kLR)
+        kLIs.append(kLI)
+    t1 = log.timer_debug1('aoaux', *t1)
 
     feri = h5py.File(mydf._cderi)
-    aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
-    j_only = numpy.all(aosym_s2)
-    fusion_workers = mpi.tasks_location(mpi.static_partition)(lib.flatten(fusion_jobs))
-    log.debug2('Lpq_workers %s', Lpq_workers)
     log.debug2('j3c_workers %s', j3c_workers)
-    log.debug2('fusion_workers %s', fusion_workers)
-    def loop_fusion_jobs(uniq_k_id):
-        for job in fusion_jobs[uniq_k_id]:
-            job_id = job[0]
-            worker = fusion_workers[job_id]
-            col0, col1 = job[4:6]
-            yield job_id, worker, col0, col1
+    for i, jobs in enumerate(j3c_jobs):
+        if j3c_workers[i] == rank:
+            job_id = jobs[0]
+            for k, kptij in enumerate(kptij_lst):
+                uniq_k_id = uniq_inverse[k]
 
-    def collect_chunks(keys, workers, dst, row0, row1):
-        val = []
-        for i, worker in enumerate(workers):
-            if rank == dst:
-                if worker == dst:
-                    val.append(numpy.asarray(feri[keys[i]][row0:row1]))
-                else:
-                    val.append(mpi.sendrecv(None, worker, dst))
-            elif rank == worker:
-                mpi.sendrecv(numpy.asarray(feri[keys[i]][row0:row1]), worker, dst)
-        return val
+                key = '-chunks/%d/%d' % (job_id, k)
+                Lpq = numpy.asarray(feri['Lpq'+key])
+                Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
+                del(feri['Lpq'+key])
+                feri['Lpq'+key] = Lpq
 
-    def distribute_int3c_s1(int3c_jobs, int3c_workers, col_id, label,
-                            worker_dst, k):
-        job_ids = [jobs[col_id][0] for jobs in int3c_jobs]
-        keys = ['%s-chunks/%d/%d' % (label, job_id, k) for job_id in job_ids]
-        workers = [int3c_workers[job_id] for job_id in job_ids]
-        v = collect_chunks(keys, workers, worker_dst, 0, naux)
-        if rank == worker_dst:
-            return numpy.vstack(v)
-
-    def distribute_int3c_s2(int3c_jobs, int3c_workers, label, k):
-        uniq_k_id = uniq_inverse[k]
-        for jobs in int3c_jobs:
-            job_ids = [job[0] for job in jobs]
-            keys = ['%s-chunks/%d/%d' % (label, job_id, k) for job_id in job_ids]
-            workers = [int3c_workers[job_id] for job_id in job_ids]
-            ksh0, ksh1 = jobs[0][1:3]
-            rowtot = aux_loc[ksh1] - aux_loc[ksh0]
-            rowblk = min(rowtot, int(max_memory*1e6/16/2/nao**2))
-            log.debug2('distribute_int3c_s2 kpt %d  (%d:%d) rowtot %d rowblk %d',
-                       k, ksh0, ksh1, rowtot, rowblk)
-
-            for p0, p1 in lib.prange(0, nrow, rowblk):
-                v = collect_chunks(keys, workers, 0, p0, p1)
-                if rank == 0:
-                    v = numpy.hstack(v).reshape(-1,nao,nao)
-                    if j_only:
-                        tmp = v.transpose(0,2,1).conj()
-                        v += tmp
-                        tmp = None
-                    v = lib.pack_tril(v)
-
-                row0 = p0 + aux_loc[ksh0]
-                row1 = p1 + aux_loc[ksh0]
-                for job_id, worker, col0, col1 in loop_fusion_jobs(uniq_k_id):
-                    key = '%s-fus/%d/%d' % (label, job_id, k)
-                    if rank == 0:
-                        if worker == 0:
-                            feri[key][row0:row1] = v[:,col0:col1]
-                        else:
-                            mpi.sendrecv(v[:,col0:col1], 0, worker)
-                    elif rank == worker:
-                        feri[key][row0:row1] = mpi.sendrecv(None, 0, worker)
-    ####
-    for k, kptij in enumerate(kptij_lst):
-        uniq_k_id = uniq_inverse[k]
-
-        if aosym_s2[k]:
-            if gamma_point(kptij):
-                dtype = 'f8'
-            else:
-                dtype = 'c16'
-            for job_id, worker, col0, col1 in loop_fusion_jobs(uniq_k_id):
-                ncol = col1 - col0
-                if rank == worker:
-                    key = '-fus/%d/%d' % (job_id, k)
-                    feri.create_dataset('Lpq'+key, (naux,ncol), dtype)
-                    feri.create_dataset('j3c'+key, (naux,ncol), dtype)
-
-            distribute_int3c_s2(Lpq_jobs, Lpq_workers, 'Lpq', k)
-            distribute_int3c_s2(j3c_jobs, j3c_workers, 'j3c', k)
-
-            for job_id, worker, col0, col1 in loop_fusion_jobs(uniq_k_id):
-                if rank == worker:
-                    key = '-fus/%d/%d' % (job_id, k)
-                    Lpq = feri['Lpq'+key][:naux_short]
-                    Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
-                    feri['Lpq'+key][:] = Lpq
-                    j3c = numpy.asarray(feri['j3c'+key])
-                    lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
-                    feri['j3c'+key][:] = j3c
+                j3c = numpy.asarray(feri['j3c'+key])
+                feri['j3c'+key][:] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
                 Lpq = j3c = None
-
-        else:
-            for col_id, (job_id, worker, col0, col1) \
-                    in enumerate(loop_fusion_jobs(uniq_k_id)):
-                Lpq = distribute_int3c_s1(Lpq_jobs, Lpq_workers, col_id, 'Lpq', worker, k)
-                j3c = distribute_int3c_s1(j3c_jobs, j3c_workers, col_id, 'j3c', worker, k)
-
-                if rank == worker:
-                    key = '-fus/%d/%d' % (job_id, k)
-                    Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
-                    feri['Lpq'+key] = Lpq
-                    lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
-                    feri['j3c'+key] = j3c
-                Lpq = j3c = None
-    aoaux = coulG = s_aux = j2c = None
-    if 'Lpq-chunks' in feri: del(feri['Lpq-chunks'])
-    if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
-    comm.Barrier()
+    coulG = s_aux = j2c = None
     t1 = log.timer_debug1('distributing Lpq j3c', *t1)
     ####
 
+    aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
+    j_only = numpy.all(aosym_s2)
     vbar = mydf.auxbar(auxcell)
     ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
-    ovlp = [lib.pack_tril(x) for x in ovlp]
 
-    def process(job_id, uniq_kptji_id, sh0, sh1, col0, col1):
-        log.debug1("job_id %d uniq_k_id %d", job_id, uniq_kptji_id)
+    def process(job_id, uniq_kptji_id, sh0, sh1):
+        log.debug1("job_id %d uniq_kptji_id %d", job_id, uniq_kptji_id)
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
         adapted_ji_idx = numpy.where(uniq_inverse == uniq_kptji_id)[0]
         adapted_kptjs = kptjs[adapted_ji_idx]
@@ -464,7 +380,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         j3cR = []
         j3cI = []
         for idx in adapted_ji_idx:
-            v = numpy.asarray(feri['j3c-fus/%d/%d'%(job_id,idx)])
+            v = numpy.asarray(feri['j3c-chunks/%d/%d'%(job_id,idx)])
             j3cR.append(numpy.asarray(v.real, order='C'))
             if v.dtype == numpy.complex128:
                 j3cI.append(numpy.asarray(v.imag, order='C'))
@@ -472,84 +388,82 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 j3cI.append(None)
             v = None
 
-        ncol = col1 - col0
-        if is_zero(kpt):  # kpti == kptj
-            aosym = 's2'
-            Gblksize = max(16, int(max_memory*.2*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
-        else:
-            aosym = 's1'
-            Gblksize = max(16, int(max_memory*.4*1e6/16/ncol/(nkptj+1)))
+        max_memory = max(2000, mydf.max_memory - lib.current_memory()[0])
+        ncol = j3cR[0].shape[1]
+        Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
         Gblksize = min(Gblksize, ngs)
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         # buf for ft_aopair
-        buf = numpy.zeros((nkptj,buflen*Gblksize), dtype=numpy.complex128)
+        buf = numpy.zeros((nkptj,ncol*Gblksize), dtype=numpy.complex128)
 
-        if is_zero(kpt):  # kpti == kptj
-            shls_slice = (sh0, sh1, 0, sh1)
-            for p0, p1 in lib.prange(0, ngs, Gblksize):
-                ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, invh,
-                                      gxyz[p0:p1], gs, kpt, adapted_kptjs, out=buf)
-                nG = p1 - p0
-                for k, ji in enumerate(adapted_ji_idx):
-                    aoao = numpy.ndarray((nG,ncol), dtype=numpy.complex128,
-                                         order='F', buffer=buf[k])
-                    pqkR = numpy.ndarray((ncol,nG), buffer=pqkRbuf)
-                    pqkI = numpy.ndarray((ncol,nG), buffer=pqkIbuf)
-                    pqkR[:] = aoao.real.T
-                    pqkI[:] = aoao.imag.T
-                    aoao[:] = 0
-                    lib.dot(kLR[p0:p1].T, pqkR.T, -1, j3cR[k], 1)
-                    lib.dot(kLI[p0:p1].T, pqkI.T, -1, j3cR[k], 1)
-                    if not (is_zero(kpt) and gamma_point(adapted_kptjs[k])):
-                        lib.dot(kLR[p0:p1].T, pqkI.T, -1, j3cI[k], 1)
-                        lib.dot(kLI[p0:p1].T, pqkR.T,  1, j3cI[k], 1)
-        else:
-            shls_slice = (sh0, sh1, 0, cell.nbas)
-            ni = ncol // nao
-            for p0, p1 in lib.prange(0, ngs, Gblksize):
-                ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, invh,
-                                      gxyz[p0:p1], gs, kpt, adapted_kptjs, out=buf)
-                nG = p1 - p0
-                for k, ji in enumerate(adapted_ji_idx):
-                    aoao = numpy.ndarray((nG,ni,nao), dtype=numpy.complex128,
-                                         order='F', buffer=buf[k])
-                    pqkR = numpy.ndarray((ni,nao,nG), buffer=pqkRbuf)
-                    pqkI = numpy.ndarray((ni,nao,nG), buffer=pqkIbuf)
-                    pqkR[:] = aoao.real.transpose(1,2,0)
-                    pqkI[:] = aoao.imag.transpose(1,2,0)
-                    aoao[:] = 0
-                    pqkR = pqkR.reshape(-1,nG)
-                    pqkI = pqkI.reshape(-1,nG)
+        shls_slice = (sh0, sh1, 0, cell.nbas)
+        ni = ncol // nao
+        for p0, p1 in lib.prange(0, ngs, Gblksize):
+            ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, 's1', invh,
+                                  gxyz[p0:p1], gs, kpt, adapted_kptjs, out=buf)
+            nG = p1 - p0
+            for k, ji in enumerate(adapted_ji_idx):
+                aoao = numpy.ndarray((nG,ni,nao), dtype=numpy.complex128,
+                                     order='F', buffer=buf[k])
+                pqkR = numpy.ndarray((ni,nao,nG), buffer=pqkRbuf)
+                pqkI = numpy.ndarray((ni,nao,nG), buffer=pqkIbuf)
+                pqkR[:] = aoao.real.transpose(1,2,0)
+                pqkI[:] = aoao.imag.transpose(1,2,0)
+                aoao[:] = 0
+                pqkR = pqkR.reshape(-1,nG)
+                pqkI = pqkI.reshape(-1,nG)
+
+                if is_zero(kpt):  # kpti == kptj
+                    # *.5 for hermi_sum at the assemble step
+                    if gamma_point(adapted_kptjs[k]):
+                        lib.dot(kLR[p0:p1].T, pqkR.T, -.5, j3cR[k], 1)
+                        lib.dot(kLI[p0:p1].T, pqkI.T, -.5, j3cR[k], 1)
+                    else:
+                        zdotCN(kLR[p0:p1].T, kLI[p0:p1].T, pqkR.T, pqkI.T,
+                               -.5, j3cR[k], j3cI[k], 1)
+                else:
                     zdotCN(kLR[p0:p1].T, kLI[p0:p1].T, pqkR.T, pqkI.T,
                            -1, j3cR[k], j3cI[k], 1)
 
         if is_zero(kpt):
+            i0 = ao_loc[sh0]
+            i1 = ao_loc[sh1]
             for k, ji in enumerate(adapted_ji_idx):
                 if is_zero(adapted_kptjs[k]):
                     for i, c in enumerate(vbar):
                         if c != 0:
-                            j3cR[k][i] -= c * ovlp[k][col0:col1].real
+                            j3cR[k][i] -= c*.5 * ovlp[k][i0:i1].real.ravel()
                 else:
                     for i, c in enumerate(vbar):
                         if c != 0:
-                            j3cR[k][i] -= c * ovlp[k][col0:col1].real
-                            j3cI[k][i] -= c * ovlp[k][col0:col1].imag
+                            j3cR[k][i] -= c*.5 * ovlp[k][i0:i1].real.ravel()
+                            j3cI[k][i] -= c*.5 * ovlp[k][i0:i1].imag.ravel()
 
         for k, idx in enumerate(adapted_ji_idx):
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
-                feri['j3c-fus/%d/%d'%(job_id,idx)][:] = j3cR[k]
+                feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k]
             else:
-                feri['j3c-fus/%d/%d'%(job_id,idx)][:] = j3cR[k] + j3cI[k]*1j
+                feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k] + j3cI[k]*1j
     ####
-    for job in mpi.static_partition(lib.flatten(fusion_jobs)):
-        process(*job)
+    for i, jobs in enumerate(j3c_jobs):
+        if j3c_workers[i] == rank:
+            job_id, sh0, sh1 = jobs
+            for k, kpt in enumerate(uniq_kpts):
+                process(job_id, k, sh0, sh1)
+    kLRs = kLIs = ovlp = None
+    comm.Barrier()
     t1 = log.timer_debug1('fusing Lpq j3c', *t1)
 
-    row_segs = list(lib.prange(0, naux, mydf.blockdim))
-    nrow = sum([p1-p0 for p0, p1 in mpi.static_partition(row_segs)])
     if 'Lpq' in feri: del(feri['Lpq'])
     if 'j3c' in feri: del(feri['j3c'])
+    jobs = mpi.static_partition(range(naux))
+    if jobs:
+        naux0 = min(jobs)
+        naux1 = max(jobs) + 1
+    else:
+        naux0 = naux1 = naux
+    nrow = naux1 - naux0
     for k, kptij in enumerate(kptij_lst):
         if gamma_point(kptij):
             dtype = 'f8'
@@ -562,46 +476,52 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         feri.create_dataset('Lpq/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
-    def assemble(jobs, label, row0, row1, i0, k, worker_dst):
-        if aosym_s2[k]:
-            shape = (row1-row0, nao*(nao+1)//2)
+    def assemble(label, k, worker_dst, row0, row1):
+        val = []
+        for job_id, worker in enumerate(j3c_workers):
+            if rank == worker:
+                key = '-chunks/%d/%d' % (job_id, k)
+                val.append(feri[label+key][row0:row1])
+        if val:
+            val = numpy.hstack(val)
         else:
-            shape = (row1-row0, nao**2)
-        if gamma_point(kptij_lst[k]):
-            buf = numpy.empty(shape)
-        else:
-            buf = numpy.empty(shape, numpy.complex128)
+            val = numpy.zeros(0)
 
-        for job_id, uniq_k_id, sh0, sh1, col0, col1 in jobs:
-            worker = fusion_workers[job_id]
-            key = '%s-fus/%d/%d' % (label, job_id, k)
-            if rank == worker_dst:
-                if rank == worker:
-                    buf[:,col0:col1] = feri[key][row0:row1]
-                else:
-                    buf[:,col0:col1] = mpi.sendrecv(None, worker, worker_dst)
-            elif rank == worker:
-                mpi.sendrecv(feri[key][row0:row1], worker, worker_dst)
+        offsets = numpy.cumsum([0] + list(comm.allgather(val.size)))
+        val = mpi.gather(val.ravel(), worker_dst)
         if rank == worker_dst:
-            i1 = i0 + row1 - row0
-            feri['%s/%d'%(label,k)][i0:i1] = buf
+            nrow = row1 - row0
+            val = [val[i0:i1].reshape(nrow,-1)
+                   for i0,i1 in zip(offsets[:-1],offsets[1:])]
+            val = numpy.hstack(val)
+            if aosym_s2[k]:
+                val = lib.hermi_sum(val.reshape(-1,nao,nao), axes=(0,2,1))
+                val = lib.pack_tril(val)
+            p0, p1 = row0 - naux0, row1 - naux0
+            feri['%s/%d'%(label,k)][p0:p1] = val
 
-    j3c_workers = mpi.tasks_location(mpi.static_partition)(row_segs)
-    for jobs in fusion_jobs:
-        save_row0 = 0
-        for i, (row0, row1) in enumerate(row_segs):
-            worker_dst = j3c_workers[i]
-            uniq_k_id = jobs[0][1]
-            adapted_ji_idx = numpy.where(uniq_inverse == uniq_k_id)[0]
+    max_memory = min(8000, mydf.max_memory - lib.current_memory()[0])
+    max_memory = max(2000, min(comm.allgather(max_memory)))
+    if numpy.all(aosym_s2):
+        if gamma_point(kptij_lst):
+            blksize = max(16, int(max_memory*1e6/8/nao**2))
+        else:
+            blksize = max(16, int(max_memory*1e6/16/nao**2))
+    else:
+        blksize = max(16, int(max_memory*1e6/16/nao**2/2))
+    assemble_jobs = [(rank, p0, p1) for p0, p1 in lib.prange(naux0, naux1, blksize)]
+    npass = len(assemble_jobs)
+    assemble_jobs = lib.flatten(comm.allgather(assemble_jobs))
+    log.debug2('assemble_jobs %s', assemble_jobs)
+    assemble_jobs = shuffle_jobs(assemble_jobs, npass)
 
-            for idx in adapted_ji_idx:
-                assemble(jobs, 'Lpq', row0, row1, save_row0, idx, worker_dst)
-                assemble(jobs, 'j3c', row0, row1, save_row0, idx, worker_dst)
-            if worker_dst:
-                save_row0 += row1 - row0
+    for k, kptji in enumerate(kptij_lst):
+        for worker_dst, row0, row1 in assemble_jobs:
+            assemble('Lpq', k, worker_dst, row0, row1)
+            assemble('j3c', k, worker_dst, row0, row1)
 
-    if 'Lpq-fus' in feri: del(feri['Lpq-fus'])
-    if 'j3c-fus' in feri: del(feri['j3c-fus'])
+    if 'Lpq-chunks' in feri: del(feri['Lpq-chunks'])
+    if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
     t1 = log.timer_debug1('assembling Lpq j3c', *t1)
 
     if 'Lpq-kptij' in feri: del(feri['Lpq-kptij'])
@@ -614,52 +534,16 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
     ao_loc = cell.ao_loc_nr()
     nao = ao_loc[-1]
     segs = (ao_loc[1:]-ao_loc[:-1])*nao
-    ij_ranges = balance_segs(segs, chunks[1])
+    ij_ranges = balance_segs(segs, chunks[0])
 
-    ao_loc = auxcell.ao_loc_nr()
-    segs = ao_loc[1:] - ao_loc[:-1]
-    k_ranges = balance_segs(segs, chunks[0])
-
-    jobs = []
-    job_id = 0
-    for k0, k1, krow in k_ranges:
-        jobs_by_row = []
-        for i0, i1, icol in ij_ranges:
-            jobs_by_row.append((job_id, k0, k1, i0, i1))
-            job_id += 1
-        jobs.append(jobs_by_row)
+    jobs = [(job_id, i0, i1) for job_id, (i0, i1, x) in enumerate(ij_ranges)]
     return jobs
 
-def grids2d_fusion_jobs(cell, auxcell, kptij_lst, chunks):
-    kptis = kptij_lst[:,0]
-    kptjs = kptij_lst[:,1]
-    kpt_ji = kptjs - kptis
-    uniq_kpts, uniq_index, uniq_inverse = mdf.unique(kpt_ji)
-    ao_loc = cell.ao_loc_nr()
-    nao = ao_loc[-1]
-
-    segs = (ao_loc[1:]-ao_loc[:-1])*nao
-    ij_ranges_s1 = balance_segs(segs, chunks[1])
-    segs = ao_loc[1:]*(ao_loc[1:]+1)//2 - ao_loc[:-1]*(ao_loc[:-1]+1)//2
-    ij_ranges_s2 = balance_segs(segs, chunks[1])
-
-    jobs = []
-    job_id = 0
-    for k, kpt in enumerate(uniq_kpts):
-        if is_zero(kpt):  # kpti == kptj
-            shranges = ij_ranges_s2
-        else:
-            shranges = ij_ranges_s1
-        jobs_for_k = []
-        col1 = 0
-        for sh_range in shranges:
-            sh0, sh1, ncol = sh_range
-            col0, col1 = col1, col1+ncol
-            jobs_for_k.append((job_id, k, sh0, sh1, col0, col1))
-            job_id += 1
-        jobs.append(jobs_for_k)
-    return jobs
-
+def shuffle_jobs(jobs, step):
+    shuffled = []
+    for i in range(step):
+        shuffled.append(jobs[i::step])
+    return lib.flatten(shuffled)
 
 # Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
 # It is because the summation over real space images are splited by mpi.static_partition
@@ -674,34 +558,39 @@ def _int_nuc_vloc(cell, nuccell, kpts):
     fakenuc._atm, fakenuc._bas, fakenuc._env = \
             gto.conc_env(nuccell._atm, nuccell._bas, nuccell._env,
                          fakenuc._atm, fakenuc._bas, fakenuc._env)
+    charge = cell.atom_charges()
+    charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)
 
     nao = cell.nao_nr()
     #:buf = [numpy.zeros((nao,nao), order='F', dtype=numpy.complex128)
     #:       for k in range(nkpts)]
-    buf = numpy.zeros((nkpts,fakenuc.natm,nao,nao),
+    buf = numpy.zeros((nkpts,8,nao,nao),
                       dtype=numpy.complex128).transpose(0,3,2,1)
     ints = incore._wrap_int3c(cell, fakenuc, 'cint3c2e_sph', 1, Ls, buf)
     atm, bas, env = ints._envs[:3]
-    c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
-                                    cell.nbas*2, cell.nbas*2+fakenuc.natm)
 
     xyz = numpy.asarray(cell.atom_coords(), order='C')
     ptr_coordL = atm[:cell.natm,PTR_COORD]
     ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-    for l in mpi.static_partition(range(len(Ls))):
-        L1 = Ls[l]
-        env[ptr_coordL] = xyz + L1
-        exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
-        exp_Lk = numpy.asarray(exp_Lk, order='C')
-        exp_Lk[l] = .5
-        ints(exp_Lk, c_shls_slice)
+    nuc = 0
+    for atm0, atm1 in lib.prange(0, fakenuc.natm, 8):
+        c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
+                                        cell.nbas*2+atm0, cell.nbas*2+atm1)
 
-    charge = cell.atom_charges()
-    charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)
-    buf = numpy.einsum('kijz,z->kij', buf, charge)
-    buf = buf + buf.transpose(0,2,1).conj()
-# buf is mpi.reduced in get_nuc function
-    return buf
+        for l in mpi.static_partition(range(len(Ls))):
+            L1 = Ls[l]
+            env[ptr_coordL] = xyz + L1
+            exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
+            exp_Lk = numpy.asarray(exp_Lk, order='C')
+            exp_Lk[l] = .5
+            ints(exp_Lk, c_shls_slice)
+        v = buf[:,:,:,:atm1-atm0]
+        nuc += numpy.einsum('kijz,z->kij', v, charge[atm0:atm1])
+        v[:] = 0
+
+    nuc = nuc + nuc.transpose(0,2,1).conj()
+# nuc is mpi.reduced in get_nuc function
+    return nuc
 
 def _assign_kpts_task(kpts, kptij_lst):
     mask = numpy.zeros(len(kptij_lst), dtype=bool)
@@ -740,18 +629,16 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
         feri = h5py.File(erifile, 'w')
 
     workers = numpy.zeros(len(all_jobs), dtype=int)
-    costs = [(aux_loc[k1]-aux_loc[k0])*(ao_loc[i1]-ao_loc[i0])
-             for job_id, k0, k1, i0, i1 in all_jobs]
-    for job_id, ksh0, ksh1, ish0, ish1 in mpi.work_balanced_partition(all_jobs, costs):
+    costs = [(ao_loc[i1]-ao_loc[i0]) for job_id, i0, i1 in all_jobs]
+    for job_id, ish0, ish1 in mpi.work_balanced_partition(all_jobs, costs):
         dataname = '%s/%d' % (label, job_id)
         if dataname in feri:
             del(feri[dataname])
 
         di = ao_loc[ish1] - ao_loc[ish0]
-        dk = aux_loc[ksh1] - aux_loc[ksh0]
         dij = di * nao
         buflen = max(8, int(max_memory*1e6/16/(nkptij*dij)))
-        auxranges = balance_segs(aux_loc[ksh0+1:ksh1+1]-aux_loc[ksh0:ksh1], buflen)
+        auxranges = balance_segs(aux_loc[1:]-aux_loc[:-1], buflen)
         buflen = max([x[2] for x in auxranges])
         buf = [numpy.zeros(dij*buflen, dtype=numpy.complex128) for k in range(nkptij)]
         ints = incore._wrap_int3c(cell, auxcell, intor, 1, Ls, buf)
@@ -759,7 +646,7 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
 
         for kpt_id, kptij in enumerate(kptij_lst):
             key = '%s/%d' % (dataname, kpt_id)
-            shape = (dk, dij)
+            shape = (naux, dij)
             if gamma_point(kptij):
                 feri.create_dataset(key, shape, 'f8')
             else:
@@ -770,8 +657,8 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
             logger.debug1(cell, "job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             c_shls_slice = (ctypes.c_int*6)(ish0, ish1, cell.nbas, cell.nbas*2,
-                                            cell.nbas*2+ksh0+sh0,
-                                            cell.nbas*2+ksh0+sh1)
+                                            cell.nbas*2+sh0,
+                                            cell.nbas*2+sh1)
             if numpy.all(aosym_s2):
                 for l, L1 in enumerate(Ls):
                     env[ptr_coordL] = xyz + L1

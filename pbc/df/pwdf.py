@@ -81,12 +81,16 @@ class PWDF(pwdf.PWDF):
     def close(self):
         self._reg_keys = mpi.del_registry(self._reg_keys)
 
-    def prange(self, start, stop, step):
+    def prange(self, start, stop, step=None):
         # affect pw_loop and ft_loop function
         mpi_size = mpi.pool.size
-        step = min(step, (stop-start+mpi_size-1)//mpi_size)
+        if step is None:
+            step = (stop-start+mpi_size-1) // mpi_size
+        else:
+            step = min(step, (stop-start+mpi_size-1)//mpi_size)
         task_lst = [(p0,p1) for p0, p1 in lib.prange(start, stop, step)]
         return mpi.static_partition(task_lst)
+    mpi_prange = prange
 
     get_nuc = get_nuc
     get_pp = get_pp
