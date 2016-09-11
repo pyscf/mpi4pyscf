@@ -457,12 +457,9 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
 
     if 'Lpq' in feri: del(feri['Lpq'])
     if 'j3c' in feri: del(feri['j3c'])
-    jobs = mpi.static_partition(range(naux))
-    if jobs:
-        naux0 = min(jobs)
-        naux1 = max(jobs) + 1
-    else:
-        naux0 = naux1 = naux
+    segsize = (naux+mpi.pool.size-1) // mpi.pool.size
+    naux0 = min(naux, rank*segsize)
+    naux1 = min(naux, rank*segsize+segsize)
     nrow = naux1 - naux0
     for k, kptij in enumerate(kptij_lst):
         if gamma_point(kptij):
@@ -476,29 +473,31 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         feri.create_dataset('Lpq/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
-    def assemble(label, k, worker_dst, row0, row1):
-        val = []
-        for job_id, worker in enumerate(j3c_workers):
-            if rank == worker:
-                key = '-chunks/%d/%d' % (job_id, k)
-                val.append(feri[label+key][row0:row1])
-        if val:
-            val = numpy.hstack(val)
-        else:
-            val = numpy.zeros(0)
+    def assemble(label, k, p0, p1):
+        slices = [(min(i*segsize+p0,naux), min(i*segsize+p1, naux))
+                  for i in range(mpi.pool.size)]
+        row0, row1 = slices[rank]
+        loc0, loc1 = row0-naux0, row1-naux0
+        log.debug1('assemble %s k=%d %d:%d', label, k, row0, row1)
+        segs = []
+        for p0, p1 in slices:
+            val = []
+            for job_id, worker in enumerate(j3c_workers):
+                if rank == worker:
+                    key = '-chunks/%d/%d' % (job_id, k)
+                    val.append(feri[label+key][p0:p1])
+            if val:
+                segs.append(numpy.hstack(val))
+            else:
+                segs.append(numpy.zeros(0))
+        val = None
+        segs = mpi.alltoall(segs, True)
 
-        offsets = numpy.cumsum([0] + list(comm.allgather(val.size)))
-        val = mpi.gather(val.ravel(), worker_dst)
-        if rank == worker_dst:
-            nrow = row1 - row0
-            val = [val[i0:i1].reshape(nrow,-1)
-                   for i0,i1 in zip(offsets[:-1],offsets[1:])]
-            val = numpy.hstack(val)
-            if aosym_s2[k]:
-                val = lib.hermi_sum(val.reshape(-1,nao,nao), axes=(0,2,1))
-                val = lib.pack_tril(val)
-            p0, p1 = row0 - naux0, row1 - naux0
-            feri['%s/%d'%(label,k)][p0:p1] = val
+        segs = numpy.hstack([x.reshape(loc1-loc0,-1) for x in segs])
+        if aosym_s2[k]:
+            segs = lib.hermi_sum(segs.reshape(-1,nao,nao), axes=(0,2,1))
+            segs = lib.pack_tril(segs)
+        feri['%s/%d'%(label,k)][loc0:loc1] = segs
 
     max_memory = min(8000, mydf.max_memory - lib.current_memory()[0])
     max_memory = max(2000, min(comm.allgather(max_memory)))
@@ -509,16 +508,10 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
             blksize = max(16, int(max_memory*1e6/16/nao**2))
     else:
         blksize = max(16, int(max_memory*1e6/16/nao**2/2))
-    assemble_jobs = [(rank, p0, p1) for p0, p1 in lib.prange(naux0, naux1, blksize)]
-    npass = len(assemble_jobs)
-    assemble_jobs = lib.flatten(comm.allgather(assemble_jobs))
-    log.debug2('assemble_jobs %s', assemble_jobs)
-    assemble_jobs = shuffle_jobs(assemble_jobs, npass)
-
     for k, kptji in enumerate(kptij_lst):
-        for worker_dst, row0, row1 in assemble_jobs:
-            assemble('Lpq', k, worker_dst, row0, row1)
-            assemble('j3c', k, worker_dst, row0, row1)
+        for p0, p1 in lib.prange(0, segsize, blksize):
+            assemble('Lpq', k, p0, p1)
+            assemble('j3c', k, p0, p1)
 
     if 'Lpq-chunks' in feri: del(feri['Lpq-chunks'])
     if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
@@ -538,12 +531,6 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
 
     jobs = [(job_id, i0, i1) for job_id, (i0, i1, x) in enumerate(ij_ranges)]
     return jobs
-
-def shuffle_jobs(jobs, step):
-    shuffled = []
-    for i in range(step):
-        shuffled.append(jobs[i::step])
-    return lib.flatten(shuffled)
 
 # Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
 # It is because the summation over real space images are splited by mpi.static_partition

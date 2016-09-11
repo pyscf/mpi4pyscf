@@ -105,7 +105,7 @@ def gather(sendbuf, root=0):
         size_dtype = comm.gather((sendbuf.size, mpi_dtype), root=root)
         _assert(all(x[1] == mpi_dtype for x in size_dtype if x[0] > 0))
         counts = numpy.array([x[0] for x in size_dtype])
-        displs = numpy.append([0], numpy.cumsum(counts)[:-1])
+        displs = numpy.append(0, numpy.cumsum(counts[:-1]))
         recvbuf = numpy.empty(sum(counts), dtype=sendbuf.dtype)
         comm.Gatherv([sendbuf.ravel(), mpi_dtype],
                      [recvbuf.ravel(), counts, displs, mpi_dtype], root)
@@ -120,11 +120,40 @@ def allgather(sendbuf):
     shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
     _assert(sendbuf.dtype.char == mpi_dtype or sendbuf.size == 0)
     counts = numpy.array(comm.allgather(sendbuf.size))
-    displs = numpy.append([0], numpy.cumsum(counts)[:-1])
+    displs = numpy.append(0, numpy.cumsum(counts[:-1]))
     recvbuf = numpy.empty(sum(counts), dtype=sendbuf.dtype)
     comm.Allgatherv([sendbuf.ravel(), mpi_dtype],
                     [recvbuf.ravel(), counts, displs, mpi_dtype])
     return recvbuf.reshape((-1,) + shape[1:])
+
+def alltoall(sendbuf, split_recvbuf=False):
+    if isinstance(sendbuf, numpy.ndarray):
+        sendbuf = numpy.asarray(sendbuf, order='C')
+        nrow = sendbuf.shape[0]
+        ncol = sendbuf.size // nrow
+        segsize = (nrow+pool.size-1) // pool.size * ncol
+        sdispls = numpy.arange(0, pool.size*segsize, segsize)
+        sdispls[sdispls>sendbuf.size] = sendbuf.size
+        scounts = numpy.append(sdispls[1:]-sdispls[:-1], sendbuf.size-sdispls[-1])
+    else:
+        assert(len(sendbuf) == pool.size)
+        sendbuf = [numpy.asarray(x).ravel() for x in sendbuf]
+        scounts = numpy.asarray([x.size for x in sendbuf])
+        sdispls = numpy.append(0, numpy.cumsum(scounts[:-1]))
+        sendbuf = numpy.hstack(sendbuf)
+
+    #mpi_dtype = comm.bcast(sendbuf.dtype.char)
+    #_assert(sendbuf.dtype.char == mpi_dtype)
+    rcounts = numpy.asarray(comm.alltoall(scounts))
+    rdispls = numpy.append(0, numpy.cumsum(rcounts[:-1]))
+
+    recvbuf = numpy.empty(sum(rcounts), dtype=sendbuf.dtype)
+    comm.Alltoallv([sendbuf.ravel(), scounts, sdispls, sendbuf.dtype.char],
+                   [recvbuf.ravel(), rcounts, rdispls, sendbuf.dtype.char])
+    if split_recvbuf:
+        return [recvbuf[p0:p0+c] for p0,c in zip(rdispls,rcounts)]
+    else:
+        return recvbuf
 
 def sendrecv(sendbuf, source=0, dest=0):
     if source == dest:
