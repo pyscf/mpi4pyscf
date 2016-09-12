@@ -10,6 +10,7 @@ __all__ = ["MPIPool", "MPIPoolException"]
 
 import os
 import sys
+import imp
 import types
 import marshal
 #import traceback
@@ -82,6 +83,14 @@ class MPIPool(object):
             if isinstance(task, _close_pool_message):
                 if self.debug:
                     print("Worker {0} close.".format(self.rank))
+# Handle global import lock for multithreading, see
+#   http://stackoverflow.com/questions/12389526/import-inside-of-a-python-thread
+#   https://docs.python.org/3.4/library/imp.html#imp.lock_held
+# Global import lock affects the ctypes module.  It leads to deadlock when
+# ctypes function is called in new threads created by threading module.
+                if sys.version_info < (3,4):
+                    if not imp.lock_held():
+                        imp.acquire_lock()
                 sys.exit(0)
 
             # Check if message is special type containing new function
@@ -101,7 +110,7 @@ class MPIPool(object):
     def apply(self, function, master_args, worker_args):
         if not self.is_master():
             self.wait()
-            return
+            exit(0)
 
         if function is not self.function:
             if self.debug:

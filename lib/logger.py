@@ -152,9 +152,11 @@ else:
     def flush(rec, msg, *args):
         pass
 
-#def msg(level, rec, msg, *args):
-#    if rec.verbose >= level:
-#        flush(rec, 'LOGLVL-%d: %s\n' % (level, (msg%args)))
+#def node_flush(rec, msg, *args):
+#    rec.stdout.write('rank = %d' % mpi.pool.rank)
+#    rec.stdout.write(msg%args)
+#    rec.stdout.write('\n')
+#    rec.stdout.flush()
 
 def log(rec, msg, *args):
     if rec.verbose > QUIET:

@@ -9,6 +9,7 @@ Ref:
 '''
 
 import time
+import platform
 import copy
 import ctypes
 import numpy
@@ -212,6 +213,9 @@ def _build(reg_keys, j_only=False, with_j3c=True):
                         mydf.auxbasis, mydf.eta, mydf.exxdiv, mydf.blockdim))
 
     log = logger.Logger(mydf.stdout, mydf.verbose)
+    info = rank, platform.node(), platform.os.getpid()
+    log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
+
     t1 = (time.clock(), time.time())
     cell = mydf.cell
     if mydf.eta is None:
@@ -269,39 +273,6 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     kpt_ji = kptjs - kptis
     uniq_kpts, uniq_index, uniq_inverse = mdf.unique(kpt_ji)
 
-# Estimates the buffer size based on the last contraction in G-space.
-# This contraction requires to hold nkptj copies of (naux,?) array
-# simultaneously in memory.
-    max_memory = mydf.max_memory - lib.current_memory()[0]
-    max_memory = max(2000, min(comm.allgather(max_memory)))
-    #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
-    nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
-    buflen = int(min(max(max_memory*.6*1e6/16/naux/(nkptj_max+1), nao),
-                     nao**2/mpi.pool.size+3*nao, nao**2))
-    chunks = (buflen, nao)
-
-    j3c_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
-    log.debug1('max_memory = %s MB  chunks %s', max_memory, chunks)
-    log.debug2('j3c_jobs %s', j3c_jobs)
-
-    if mydf.metric.upper() == 'S':
-        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
-                'cint3c1e_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell_short.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
-    else:
-        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
-                'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell_short.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
-        s_aux = [x*2 for x in s_aux]
-    s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
-    compress = mdf.compress_Lpq_to_chgcell(auxcell_short, chgcell)
-    t1 = log.timer_debug1('Lpq', *t1)
-
-    j3c_workers = _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
-                          'cint3c2e_sph', 'j3c-chunks', max_memory)
-    t1 = log.timer_debug1('3c2e', *t1)
-    ####
-
     gs = mydf.gs
     gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
                                numpy.append(range(gs[1]+1), range(-gs[1],0)),
@@ -342,29 +313,65 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         kLIs.append(kLI)
     t1 = log.timer_debug1('aoaux', *t1)
 
-    feri = h5py.File(mydf._cderi)
+# Estimates the buffer size based on the last contraction in G-space.
+# This contraction requires to hold nkptj copies of (naux,?) array
+# simultaneously in memory.
+    max_memory = mydf.max_memory - lib.current_memory()[0]
+    max_memory = max(2000, min(comm.allgather(max_memory)))
+    #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
+    nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
+    buflen = int(min(max(max_memory*.5e6/16/naux/(nkptj_max+1)/nao, 1),
+                     nao/mpi.pool.size+3, nao))
+    chunks = (buflen, nao)
+
+    j3c_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
+    log.debug1('max_memory = %s MB  chunks %s', max_memory, chunks)
+    log.debug2('j3c_jobs %s', j3c_jobs)
+
+    if mydf.metric.upper() == 'S':
+        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+                'cint3c1e_sph', 'Lpq-chunks', max_memory)
+        s_aux = auxcell_short.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
+    else:
+        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+                'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
+        s_aux = auxcell_short.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
+        s_aux = [x*2 for x in s_aux]
+    s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
+    compress = mdf.compress_Lpq_to_chgcell(auxcell_short, chgcell)
+    t1 = log.timer_debug1('Lpq', *t1)
+
+    j3c_workers = _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
+                          'cint3c2e_sph', 'j3c-chunks', max_memory)
     log.debug2('j3c_workers %s', j3c_workers)
+    t1 = log.timer_debug1('3c2e', *t1)
+    ####
+
+    feri = h5py.File(mydf._cderi)
+    def fuse(Lpq, j3c, uniq_k_id, key):
+        Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
+        del(feri['Lpq'+key])
+        feri['Lpq'+key] = Lpq
+        feri['j3c'+key][:] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
+
+    write_handler = None
     for i, jobs in enumerate(j3c_jobs):
         if j3c_workers[i] == rank:
             job_id = jobs[0]
             for k, kptij in enumerate(kptij_lst):
                 uniq_k_id = uniq_inverse[k]
-
                 key = '-chunks/%d/%d' % (job_id, k)
                 Lpq = numpy.asarray(feri['Lpq'+key])
-                Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
-                del(feri['Lpq'+key])
-                feri['Lpq'+key] = Lpq
-
                 j3c = numpy.asarray(feri['j3c'+key])
-                feri['j3c'+key][:] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
+                write_handler = async_write(write_handler, fuse, Lpq, j3c,
+                                            uniq_k_id, key)
                 Lpq = j3c = None
-    coulG = s_aux = j2c = None
+    write_handler.join()
+    write_handler = coulG = s_aux = j2c = compress = None
     t1 = log.timer_debug1('distributing Lpq j3c', *t1)
     ####
 
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
-    j_only = numpy.all(aosym_s2)
     vbar = mydf.auxbar(auxcell)
     ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
 
@@ -445,15 +452,13 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k]
             else:
                 feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k] + j3cI[k]*1j
-    ####
-    for i, jobs in enumerate(j3c_jobs):
-        if j3c_workers[i] == rank:
-            job_id, sh0, sh1 = jobs
-            for k, kpt in enumerate(uniq_kpts):
-                process(job_id, k, sh0, sh1)
-    kLRs = kLIs = ovlp = None
-    comm.Barrier()
-    t1 = log.timer_debug1('fusing Lpq j3c', *t1)
+
+    def fuse():
+        for i, jobs in enumerate(j3c_jobs):
+            if j3c_workers[i] == rank:
+                job_id, sh0, sh1 = jobs
+                for k, kpt in enumerate(uniq_kpts):
+                    process(job_id, k, sh0, sh1)
 
     if 'Lpq' in feri: del(feri['Lpq'])
     if 'j3c' in feri: del(feri['j3c'])
@@ -473,12 +478,11 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         feri.create_dataset('Lpq/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
-    def assemble(label, k, p0, p1):
+    dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
+    dims = [dims[j3c_workers==w].sum() * nao for w in range(mpi.pool.size)]
+    def load(label, k, p0, p1):
         slices = [(min(i*segsize+p0,naux), min(i*segsize+p1, naux))
                   for i in range(mpi.pool.size)]
-        row0, row1 = slices[rank]
-        loc0, loc1 = row0-naux0, row1-naux0
-        log.debug1('assemble %s k=%d %d:%d', label, k, row0, row1)
         segs = []
         for p0, p1 in slices:
             val = []
@@ -490,10 +494,12 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 segs.append(numpy.hstack(val))
             else:
                 segs.append(numpy.zeros(0))
-        val = None
-        segs = mpi.alltoall(segs, True)
+        return segs
 
-        segs = numpy.hstack([x.reshape(loc1-loc0,-1) for x in segs])
+    def save(label, k, p0, p1, segs):
+        loc0, loc1 = min(p0, naux-naux0), min(p1, naux-naux0)
+        segs = mpi.alltoall(segs, True)
+        segs = numpy.hstack([x.reshape(-1,dims[i]) for i,x in enumerate(segs)])
         if aosym_s2[k]:
             segs = lib.hermi_sum(segs.reshape(-1,nao,nao), axes=(0,2,1))
             segs = lib.pack_tril(segs)
@@ -508,10 +514,34 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
             blksize = max(16, int(max_memory*1e6/16/nao**2))
     else:
         blksize = max(16, int(max_memory*1e6/16/nao**2/2))
+
+    thread_fusion = lib.background_thread(fuse)
+
+    t2 = t1
+    write_handler = None
     for k, kptji in enumerate(kptij_lst):
         for p0, p1 in lib.prange(0, segsize, blksize):
-            assemble('Lpq', k, p0, p1)
-            assemble('j3c', k, p0, p1)
+            segs = load('Lpq', k, p0, p1)
+            write_handler = async_write(write_handler, save, 'Lpq', k, p0, p1, segs)
+            t2 = log.timer_debug1('assemble Lpq k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
+            segs = None
+    write_handler.join()
+    write_handler = None
+
+    thread_fusion.join()
+    kLRs = kLIs = ovlp = None
+    t1 = log.timer_debug1('fusing Lpq j3c', *t1)
+
+    t2 = t1
+    write_handler = None
+    for k, kptji in enumerate(kptij_lst):
+        for p0, p1 in lib.prange(0, segsize, blksize):
+            segs = load('j3c', k, p0, p1)
+            write_handler = async_write(write_handler, save, 'j3c', k, p0, p1, segs)
+            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
+            segs = None
+    write_handler.join()
+    write_handler = None
 
     if 'Lpq-chunks' in feri: del(feri['Lpq-chunks'])
     if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
@@ -526,7 +556,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
 def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
     ao_loc = cell.ao_loc_nr()
     nao = ao_loc[-1]
-    segs = (ao_loc[1:]-ao_loc[:-1])*nao
+    segs = ao_loc[1:]-ao_loc[:-1]
     ij_ranges = balance_segs(segs, chunks[0])
 
     jobs = [(job_id, i0, i1) for job_id, (i0, i1, x) in enumerate(ij_ranges)]
@@ -678,6 +708,12 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
 def is_zero(kpt):
     return abs(kpt).sum() < mdf.KPT_DIFF_TOL
 gamma_point = is_zero
+
+def async_write(thread_io, fn, *args):
+    if thread_io is not None:
+        thread_io.join()
+    thread_io = lib.background_thread(fn, *args)
+    return thread_io
 
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
