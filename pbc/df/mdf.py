@@ -45,7 +45,6 @@ def _init_MDF_wrap(args):
     cell, kpts = args
     if mdf.rank > 0:
         cell = mdf.gto.loads(cell)
-        cell.verbose = 0
     return mdf.mpi.register_for(mdf.MDF(cell, kpts))
 
 def get_nuc(mydf, kpts=None):
@@ -355,6 +354,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         feri['j3c'+key][:] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
 
     write_handler = None
+    t2 = t1
     for i, jobs in enumerate(j3c_jobs):
         if j3c_workers[i] == rank:
             job_id = jobs[0]
@@ -366,9 +366,10 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 write_handler = async_write(write_handler, fuse, Lpq, j3c,
                                             uniq_k_id, key)
                 Lpq = j3c = None
+                log.alltimer_debug2('fusing %d %d' % (job_id, k), *t1)
     write_handler.join()
     write_handler = coulG = s_aux = j2c = compress = None
-    t1 = log.timer_debug1('distributing Lpq j3c', *t1)
+    t1 = log.alltimer_debug1('distributing Lpq j3c pass1', *t1)
     ####
 
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
@@ -376,7 +377,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
 
     def process(job_id, uniq_kptji_id, sh0, sh1):
-        log.debug1("job_id %d uniq_kptji_id %d", job_id, uniq_kptji_id)
+        log.alldebug2("ft-fuse job_id %d uniq_kptji_id %d", job_id, uniq_kptji_id)
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
         adapted_ji_idx = numpy.where(uniq_inverse == uniq_kptji_id)[0]
         adapted_kptjs = kptjs[adapted_ji_idx]
@@ -460,6 +461,11 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 for k, kpt in enumerate(uniq_kpts):
                     process(job_id, k, sh0, sh1)
 
+    #thread_fusion = lib.background_thread(fuse)
+    fuse()
+    kLRs = kLIs = ovlp = None
+    t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
+
     if 'Lpq' in feri: del(feri['Lpq'])
     if 'j3c' in feri: del(feri['j3c'])
     segsize = (naux+mpi.pool.size-1) // mpi.pool.size
@@ -515,8 +521,6 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     else:
         blksize = max(16, int(max_memory*1e6/16/nao**2/2))
 
-    thread_fusion = lib.background_thread(fuse)
-
     t2 = t1
     write_handler = None
     for k, kptji in enumerate(kptij_lst):
@@ -527,10 +531,9 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
             segs = None
     write_handler.join()
     write_handler = None
-
-    thread_fusion.join()
-    kLRs = kLIs = ovlp = None
-    t1 = log.timer_debug1('fusing Lpq j3c', *t1)
+    #thread_fusion.join()
+    #kLRs = kLIs = ovlp = None
+    #t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
 
     t2 = t1
     write_handler = None
@@ -545,7 +548,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
 
     if 'Lpq-chunks' in feri: del(feri['Lpq-chunks'])
     if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
-    t1 = log.timer_debug1('assembling Lpq j3c', *t1)
+    t1 = log.alltimer_debug1('assembling Lpq j3c', *t1)
 
     if 'Lpq-kptij' in feri: del(feri['Lpq-kptij'])
     if 'Lpq-kptij' in feri: del(feri['j3c-kptij'])
@@ -645,8 +648,15 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
     else:
         feri = h5py.File(erifile, 'w')
 
+    def estimate_costs(all_jobs):
+        l = cell._bas[:,1]
+        nprim = cell._bas[:,2]
+        dims = (l*2+1) * nprim
+        pgto_loc = numpy.append(0, dims.cumsum())
+        costs = [(pgto_loc[i1]-pgto_loc[i0]) for x, i0, i1 in all_jobs]
+        return costs
     workers = numpy.zeros(len(all_jobs), dtype=int)
-    costs = [(ao_loc[i1]-ao_loc[i0]) for job_id, i0, i1 in all_jobs]
+    costs = estimate_costs(all_jobs)
     for job_id, ish0, ish1 in mpi.work_balanced_partition(all_jobs, costs):
         dataname = '%s/%d' % (label, job_id)
         if dataname in feri:
@@ -671,7 +681,7 @@ def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
 
         naux0 = 0
         for istep, auxrange in enumerate(auxranges):
-            logger.debug1(cell, "job_id %d step %d", job_id, istep)
+            logger.alldebug2(cell, "aux_e2 job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             c_shls_slice = (ctypes.c_int*6)(ish0, ish1, cell.nbas, cell.nbas*2,
                                             cell.nbas*2+sh0,

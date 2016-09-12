@@ -3,231 +3,140 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
-
-'''
-Logging system
-**************
-
-Log level
----------
-
-======= ======
-Level   number
-------- ------
-DEBUG4  9 
-DEBUG3  8 
-DEBUG2  7 
-DEBUG1  6 
-DEBUG   5 
-INFO    4 
-NOTE    3 
-WARN    2 
-ERROR   1 
-QUIET   0 
-======= ======
-
-Big ``verbose`` number means more noise in the output file.
-
-.. note::
-    At log level 1 (ERROR) and 2 (WARN), the messages are also output to stderr.
-
-Each Logger object has its own output destination and verbose level.  So
-multiple Logger objects can be created to manage the message system without
-affecting each other.
-The methods provided by Logger class has the direct connection to the log level.
-E.g.  :func:`info` print messages if the verbose level >= 4 (INFO):
-
->>> import sys
->>> from pyscf import lib
->>> log = lib.logger.Logger(sys.stdout, 4)
->>> log.info('info level')
-info level
->>> log.verbose = 3
->>> log.info('info level')
->>> log.note('note level')
-note level
-
-
-timer
------
-Logger object provides timer method for timing.  Set :attr:`TIMER_LEVEL` to
-control which level to output the timing.  It is 5 (DEBUG) by default.
-
->>> import sys, time
->>> from pyscf import lib
->>> log = lib.logger.Logger(sys.stdout, 4)
->>> t0 = time.clock()
->>> log.timer('test', t0)
->>> lib.logger.TIMER_LEVEL = 4
->>> log.timer('test', t0)
-    CPU time for test      0.00 sec
-
-'''
-
 import sys
 import time
 
-from pyscf.lib import parameters as param
+from pyscf.lib import logger
 from mpi4pyscf.tools import mpi
+rank = mpi.rank
 
-DEBUG4 = param.VERBOSE_DEBUG + 4
-DEBUG3 = param.VERBOSE_DEBUG + 3
-DEBUG2 = param.VERBOSE_DEBUG + 2
-DEBUG1 = param.VERBOSE_DEBUG + 1
-DEBUG  = param.VERBOSE_DEBUG
-INFO   = param.VERBOSE_INFO
-NOTE   = param.VERBOSE_NOTICE
-NOTICE = NOTE
-WARN   = param.VERBOSE_WARN
-WARNING = WARN
-ERR    = param.VERBOSE_ERR
-ERROR  = ERR
-QUIET  = param.VERBOSE_QUIET
-CRIT   = param.VERBOSE_CRIT
-ALERT  = param.VERBOSE_ALERT
-PANIC  = param.VERBOSE_PANIC
+log = logger.log
+error = logger.error
+warn = logger.warn
+note = logger.note
+info = logger.info
+debug  = logger.debug
+debug1 = logger.debug1
+debug2 = logger.debug2
+debug3 = logger.debug3
+debug4 = logger.debug4
+timer = logger.timer
+timer_debug1 = logger.timer_debug1
 
-TIMER_LEVEL  = param.TIMER_LEVEL
 
-sys.verbose = NOTE
-
-class Logger(object):
-    def __init__(self, stdout=sys.stdout, verbose=NOTE):
-        self.stdout = stdout
-        self.verbose = verbose
-        self._t0 = time.clock()
-        self._w0 = time.time()
-
-    def debug(self, msg, *args):
-        debug(self, msg, *args)
-
-    def debug1(self, msg, *args):
-        debug1(self, msg, *args)
-
-    def debug2(self, msg, *args):
-        debug2(self, msg, *args)
-
-    def debug3(self, msg, *args):
-        debug3(self, msg, *args)
-
-    def debug4(self, msg, *args):
-        debug4(self, msg, *args)
-
-    def info(self, msg, *args):
-        info(self, msg, *args)
-
-    def note(self, msg, *args):
-        note(self, msg, *args)
-
-    def warn(self, msg, *args):
-        warn(self, msg, *args)
-
-    def error(self, msg, *args):
-        error(self, msg, *args)
-
-    def log(self, msg, *args):
-        log(self, msg, *args)
-
-    def timer(self, msg, cpu0=None, wall0=None):
-        if cpu0:
-            return timer(self, msg, cpu0, wall0)
-        else:
-            self._t0, self._w0 = timer(self, msg, self._t0, wall0)
-            return self._t0, self._w0
-
-    def timer_debug1(self, msg, cpu0=None, wall0=None):
-        if self.verbose >= DEBUG1:
-            return self.timer(msg, cpu0, wall0)
-        elif wall0:
-            return time.clock(), time.time()
-        else:
-            return time.clock()
-
-if mpi.pool.rank == 0:
+if rank > 0:
     def flush(rec, msg, *args):
+        pass
+    logger.flush = flush
+
+    def allflush(rec, msg, *args):
+        sys.stdout.write('[rank %d] ' % rank)
+        sys.stdout.write(msg%args)
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+else:
+    def allflush(rec, msg, *args):
+        rec.stdout.write('[rank %d] ' % rank)
         rec.stdout.write(msg%args)
         rec.stdout.write('\n')
         rec.stdout.flush()
-else:
-    def flush(rec, msg, *args):
-        pass
 
-#def node_flush(rec, msg, *args):
-#    rec.stdout.write('rank = %d' % mpi.pool.rank)
-#    rec.stdout.write(msg%args)
-#    rec.stdout.write('\n')
-#    rec.stdout.flush()
+def alllog(rec, msg, *args):
+    if rec.verbose > logger.QUIET:
+        allflush(rec, msg, *args)
 
-def log(rec, msg, *args):
-    if rec.verbose > QUIET:
-        flush(rec, msg, *args)
+def allerror(rec, msg, *args):
+    if rec.verbose >= logger.ERROR:
+        allflush(rec, 'Error: '+msg, *args)
+    sys.stderr.write('[rank %d] Error: '%rank + (msg%args) + '\n')
 
-def error(rec, msg, *args):
-    if rec.verbose >= ERROR:
-        flush(rec, 'Error: '+msg, *args)
-    sys.stderr.write('Error: ' + (msg%args) + '\n')
+def allwarn(rec, msg, *args):
+    if rec.verbose >= logger.WARN:
+        allflush(rec, 'Warn: '+msg, *args)
+        if rec.stdout is not sys.stdout:
+            sys.stderr.write('[rank %d] Warn: '%rank + (msg%args) + '\n')
 
-if mpi.pool.rank == 0:
-    def warn(rec, msg, *args):
-        if rec.verbose >= WARN:
-            flush(rec, 'Warn: '+msg, *args)
-            if rec.stdout is not sys.stdout:
-                sys.stderr.write('Warn: ' + (msg%args) + '\n')
-else:
-    def warn(rec, msg, *args):
-        pass
+def allinfo(rec, msg, *args):
+    if rec.verbose >= logger.INFO:
+        allflush(rec, msg, *args)
 
-def info(rec, msg, *args):
-    if rec.verbose >= INFO:
-        flush(rec, msg, *args)
+def allnote(rec, msg, *args):
+    if rec.verbose >= logger.NOTICE:
+        allflush(rec, msg, *args)
 
-def note(rec, msg, *args):
-    if rec.verbose >= NOTICE:
-        flush(rec, msg, *args)
+def alldebug(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG:
+        allflush(rec, msg, *args)
 
-def debug(rec, msg, *args):
-    if rec.verbose >= DEBUG:
-        flush(rec, msg, *args)
+def alldebug1(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG1:
+        allflush(rec, msg, *args)
 
-def debug1(rec, msg, *args):
-    if rec.verbose >= DEBUG1:
-        flush(rec, msg, *args)
+def alldebug2(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG2:
+        allflush(rec, msg, *args)
 
-def debug2(rec, msg, *args):
-    if rec.verbose >= DEBUG2:
-        flush(rec, msg, *args)
+def alldebug3(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG3:
+        allflush(rec, msg, *args)
 
-def debug3(rec, msg, *args):
-    if rec.verbose >= DEBUG3:
-        flush(rec, msg, *args)
+def alldebug4(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG4:
+        allflush(rec, msg, *args)
 
-def debug4(rec, msg, *args):
-    if rec.verbose >= DEBUG4:
-        flush(rec, msg, *args)
+def allstdout(rec, msg, *args):
+    if rec.verbose >= logger.DEBUG:
+        allflush(rec, msg, *args)
+    sys.stdout.write('[rank %d] >>> %s\n' % msg)
 
-def stdout(rec, msg, *args):
-    if rec.verbose >= DEBUG:
-        flush(rec, msg, *args)
-    sys.stdout.write('>>> %s\n' % msg)
-
-def timer(rec, msg, cpu0, wall0=None):
-    cpu1, wall1 = time.clock(), time.time()
+def alltimer(rec, msg, cpu0=None, wall0=None):
+    if cpu0 is None:
+        cpu0 = rec._t0
     if wall0:
-        if rec.verbose >= TIMER_LEVEL:
-            flush(rec, ' '.join(('    CPU time for', msg,
-                                 '%9.2f sec, wall time %9.2f sec')),
-                  cpu1-cpu0, wall1-wall0)
-        return cpu1, wall1
+        rec._t0, rec._w0 = time.clock(), time.time()
+        if rec.verbose >= logger.TIMER_LEVEL:
+            allflush(rec, '    CPU time for %s %9.2f sec, wall time %9.2f sec'
+                     % (msg, rec._t0-cpu0, rec._w0-wall0))
+        return rec._t0, rec._w0
     else:
-        if rec.verbose >= TIMER_LEVEL:
-            flush(rec, ' '.join(('    CPU time for', msg, '%9.2f sec')),
-                  cpu1-cpu0)
-        return cpu1
+        rec._t0 = time.clock()
+        if rec.verbose >= logger.TIMER_LEVEL:
+            allflush(rec, '    CPU time for %s %9.2f sec' % (rec._t0-cpu0))
+        return rec._t0
 
-def timer_debug1(rec, msg, cpu0, wall0=None):
-    if rec.verbose >= DEBUG1:
-        return timer(rec, msg, cpu0, wall0)
+def alltimer_debug1(rec, msg, cpu0=None, wall0=None):
+    if rec.verbose >= logger.DEBUG1:
+        return alltimer(rec, msg, cpu0, wall0)
     elif wall0:
-        return time.clock(), time.time()
+        rec._t0, rec._w0 = time.clock(), time.time()
+        return rec._t0, rec._w0
     else:
-        return time.clock()
+        rec._t0 = time.clock()
+        return rec._t0
+
+def alltimer_debug2(rec, msg, cpu0=None, wall0=None):
+    if rec.verbose >= logger.DEBUG2:
+        return alltimer(rec, msg, cpu0, wall0)
+    elif wall0:
+        rec._t0, rec._w0 = time.clock(), time.time()
+        return rec._t0, rec._w0
+    else:
+        rec._t0 = time.clock()
+        return rec._t0
+
+
+class Logger(logger.Logger):
+    alllog = alllog
+    allerror = allerror
+    allwarn = allwarn
+    allnote = allnote
+    allinfo = allinfo
+    alldebug  = alldebug
+    alldebug1 = alldebug1
+    alldebug2 = alldebug2
+    alldebug3 = alldebug3
+    alldebug4 = alldebug4
+    alltimer = alltimer
+    alltimer_debug1 = alltimer_debug1
+    alltimer_debug2 = alltimer_debug2
+
