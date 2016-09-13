@@ -315,8 +315,8 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
 # Estimates the buffer size based on the last contraction in G-space.
 # This contraction requires to hold nkptj copies of (naux,?) array
 # simultaneously in memory.
-    max_memory = mydf.max_memory - lib.current_memory()[0]
-    max_memory = max(2000, min(comm.allgather(max_memory)))
+    mem_now = max(comm.allgather(lib.current_memory()[0]))
+    max_memory = max(2000, mydf.max_memory - mem_now)
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
     buflen = int(min(max(max_memory*.5e6/16/naux/(nkptj_max+1)/nao, 1),
@@ -324,7 +324,8 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     chunks = (buflen, nao)
 
     j3c_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
-    log.debug1('max_memory = %s MB  chunks %s', max_memory, chunks)
+    log.debug1('max_memory = %d MB (%d in use)  chunks %s',
+               max_memory, mem_now, chunks)
     log.debug2('j3c_jobs %s', j3c_jobs)
 
     if mydf.metric.upper() == 'S':
@@ -366,7 +367,7 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 write_handler = async_write(write_handler, fuse, Lpq, j3c,
                                             uniq_k_id, key)
                 Lpq = j3c = None
-                log.alltimer_debug2('fusing %d %d' % (job_id, k), *t1)
+                t2 = log.alltimer_debug2('fusing %d %d' % (job_id, k), *t2)
     write_handler.join()
     write_handler = coulG = s_aux = j2c = compress = None
     t1 = log.alltimer_debug1('distributing Lpq j3c pass1', *t1)
@@ -404,6 +405,8 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
         pqkIbuf = numpy.empty(ncol*Gblksize)
         # buf for ft_aopair
         buf = numpy.zeros((nkptj,ncol*Gblksize), dtype=numpy.complex128)
+        log.alldebug2("max_memory %d MB  blksize (%d,%d)",
+                      max_memory, Gblksize, ncol)
 
         shls_slice = (sh0, sh1, 0, cell.nbas)
         ni = ncol // nao
@@ -511,15 +514,17 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
             segs = lib.pack_tril(segs)
         feri['%s/%d'%(label,k)][loc0:loc1] = segs
 
-    max_memory = min(8000, mydf.max_memory - lib.current_memory()[0])
-    max_memory = max(2000, min(comm.allgather(max_memory)))
+    mem_now = max(comm.allgather(lib.current_memory()[0]))
+    max_memory = max(2000, min(8000, mydf.max_memory - mem_now))
     if numpy.all(aosym_s2):
         if gamma_point(kptij_lst):
-            blksize = max(16, int(max_memory*1e6/8/nao**2))
+            blksize = max(16, int(max_memory*.5e6/8/nao**2))
         else:
-            blksize = max(16, int(max_memory*1e6/16/nao**2))
+            blksize = max(16, int(max_memory*.5e6/16/nao**2))
     else:
-        blksize = max(16, int(max_memory*1e6/16/nao**2/2))
+        blksize = max(16, int(max_memory*.5e6/16/nao**2/2))
+    log.debug1('max_momory %d MB (%d in use), blksize %d',
+               max_memory, mem_now, blksize)
 
     t2 = t1
     write_handler = None
