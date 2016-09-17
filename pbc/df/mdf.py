@@ -24,7 +24,7 @@ from pyscf.pbc.df import outcore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import mdf
 from pyscf.pbc.df.mdf_jk import zdotNN, zdotCN, zdotNC
-from pyscf.gto.mole import PTR_COORD
+from pyscf.gto.mole import ANG_OF, PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 
 from mpi4pyscf.lib import logger
@@ -67,8 +67,13 @@ def _get_nuc(reg_keys, kpts=None):
     t1 = t0 = (time.clock(), time.time())
     nao = cell.nao_nr()
     auxcell = mydf.auxcell
+    chgcell = mdf.make_modchg_basis(auxcell, mydf.eta)
+    ac_cell = copy.copy(auxcell)
+    ac_cell._atm, ac_cell._bas, ac_cell._env = \
+            gto.conc_env(auxcell._atm, auxcell._bas, auxcell._env,
+                         chgcell._atm, chgcell._bas, chgcell._env)
     nuccell = mdf.make_modchg_basis(cell, mydf.eta, 0)
-    nuccell._bas = numpy.asarray(nuccell._bas[nuccell._bas[:,gto.mole.ANG_OF]==0],
+    nuccell._bas = numpy.asarray(nuccell._bas[nuccell._bas[:,ANG_OF]==0],
                                  dtype=numpy.int32, order='C')
     charge = -cell.atom_charges()
     nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(charge)])
@@ -77,7 +82,7 @@ def _get_nuc(reg_keys, kpts=None):
     vj = _int_nuc_vloc(cell, nuccell, kpts_lst)
     vj = vj.reshape(-1,nao**2)
 # Note j2c may break symmetry
-    j2c = gto.intor_cross('cint2c2e_sph', auxcell, nuccell)
+    j2c = gto.intor_cross('cint2c2e_sph', ac_cell, nuccell)
     jaux = j2c.dot(charge)
     t1 = log.timer_debug1('vnuc pass1: analytic int', *t1)
 
@@ -104,14 +109,16 @@ def _get_nuc(reg_keys, kpts=None):
 # Append nuccell to auxcell, so that they can be FT together in pw_loop
 # the first [:naux] of ft_ao are aux fitting functions.
     nuccell._atm, nuccell._bas, nuccell._env = \
-            gto.conc_env(auxcell._atm, auxcell._bas, auxcell._env,
+            gto.conc_env(ac_cell._atm, ac_cell._bas, ac_cell._env,
                          nuccell._atm, nuccell._bas, nuccell._env)
-    naux = auxcell.nao_nr()
+    naux = ac_cell.nao_nr()
     aoaux = ft_ao.ft_ao(nuccell, Gv)
     vG = numpy.einsum('i,xi,x->x', charge, aoaux[:,naux:], coulG)
     jaux -= numpy.einsum('x,xj->j', vG.real, aoaux[:,:naux].real)
     jaux -= numpy.einsum('x,xj->j', vG.imag, aoaux[:,:naux].imag)
-    jaux -= charge.sum() * mydf.auxbar(auxcell)
+    jaux -= charge.sum() * mydf.auxbar(ac_cell)
+    naux = auxcell.nao_nr()
+    jaux = mdf.fuse_auxcell_chgcell_(auxcell, chgcell)(jaux[:naux], jaux[naux:])
     jobs = mpi.static_partition(range(naux))
     jaux = jaux[jobs]
 
@@ -224,6 +231,7 @@ def _build(reg_keys, j_only=False, with_j3c=True):
 
     auxcell = mdf.make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
     chgcell = mdf.make_modchg_basis(auxcell, mydf.eta)
+    mydf.auxcell = auxcell
 
     mydf._j_only = j_only
     if j_only:
@@ -244,33 +252,26 @@ def _build(reg_keys, j_only=False, with_j3c=True):
             raise NotImplementedError
 
         _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst)
-        t1 = log.timer_debug1('3c2e', *t1)
+        t1 = log.timer_debug1('_make_j3c', *t1)
     else:
         raise NotImplementedError
-
-# Merge chgcell into auxcell
-    auxcell._atm, auxcell._bas, auxcell._env = \
-            gto.conc_env(auxcell._atm, auxcell._bas, auxcell._env,
-                         chgcell._atm, chgcell._bas, chgcell._env)
-    mydf.auxcell = auxcell
     return mydf
 
 def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = t0 = (time.clock(), time.time())
-    auxcell, auxcell_short = copy.copy(auxcell), auxcell
-    auxcell._atm, auxcell._bas, auxcell._env = \
+    ac_cell = copy.copy(auxcell)
+    ac_cell._atm, ac_cell._bas, ac_cell._env = \
             gto.conc_env(auxcell._atm, auxcell._bas, auxcell._env,
                          chgcell._atm, chgcell._bas, chgcell._env)
     ao_loc = cell.ao_loc_nr()
     aux_loc = auxcell.ao_loc_nr()
     nao = ao_loc[-1]
     naux = aux_loc[-1]
-    naux_short = auxcell_short.nao_nr()
-    kptis = kptij_lst[:,0]
-    kptjs = kptij_lst[:,1]
-    kpt_ji = kptjs - kptis
-    uniq_kpts, uniq_index, uniq_inverse = mdf.unique(kpt_ji)
+    fuse = mdf.fuse_auxcell_chgcell_(auxcell, chgcell)
+    def fusefuse(a):
+        aT = fuse(a[:naux], a[naux:]).T
+        return fuse(aT[:naux], aT[naux:]).T
 
     gs = mydf.gs
     gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
@@ -279,20 +280,27 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     invh = numpy.linalg.inv(cell._h)
     Gv = 2*numpy.pi * numpy.dot(gxyz, invh)
     ngs = gxyz.shape[0]
+
+    kptis = kptij_lst[:,0]
+    kptjs = kptij_lst[:,1]
+    kpt_ji = kptjs - kptis
+    uniq_kpts, uniq_index, uniq_inverse = mdf.unique(kpt_ji)
     # j2c ~ (-kpt_ji | kpt_ji)
-    j2c = auxcell.pbc_intor('cint2c2e_sph', hermi=1, kpts=uniq_kpts)
+    j2c = ac_cell.pbc_intor('cint2c2e_sph', hermi=1, kpts=uniq_kpts)
     t1 = log.timer_debug1('2c2e', *t1)
     kLRs = []
     kLIs = []
     for k, kpt in enumerate(uniq_kpts):
-        aoaux = ft_ao.ft_ao(auxcell, Gv, None, invh, gxyz, gs, kpt)
+        aoaux = ft_ao.ft_ao(ac_cell, Gv, None, invh, gxyz, gs, kpt).T
+        aoaux = fuse(aoaux[:naux], aoaux[naux:])
         coulG = numpy.sqrt(tools.get_coulG(cell, kpt, gs=gs) / cell.vol)
-        kLR = aoaux.real * coulG.reshape(-1,1)
-        kLI = aoaux.imag * coulG.reshape(-1,1)
+        kLR = (aoaux.real * coulG).T
+        kLI = (aoaux.imag * coulG).T
         if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
         if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
         aoaux = None
 
+        j2c[k] = fusefuse(j2c[k]).copy()
         for p0, p1 in mydf.mpi_prange(0, ngs):
             if is_zero(kpt):  # kpti == kptj
                 j2cR = lib.dot(kLR[p0:p1].T, kLR[p0:p1])
@@ -300,16 +308,16 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 j2c[k] -= mpi.allreduce(j2cR)
             else:
                  # aoaux ~ kpt_ij, aoaux.conj() ~ kpt_kl
-                j2cR, j2cI = zdotCN(kLR[p0:p1], kLI[p0:p1], kLR[p0:p1], kLI[p0:p1])
+                j2cR, j2cI = zdotCN(kLR[p0:p1].T, kLI[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
                 j2cR = mpi.allreduce(j2cR)
                 j2cI = mpi.allreduce(j2cI)
                 j2c[k] -= j2cR + j2cI * 1j
-        j2cR = j2cI = None
 
         kLR *= coulG.reshape(-1,1)
         kLI *= coulG.reshape(-1,1)
         kLRs.append(kLR)
         kLIs.append(kLI)
+        aoaux = kLR = kLI = j2cR = j2cI = coulG = None
     t1 = log.timer_debug1('aoaux', *t1)
 
 # Estimates the buffer size based on the last contraction in G-space.
@@ -323,36 +331,35 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                      nao/mpi.pool.size+3, nao))
     chunks = (buflen, nao)
 
-    j3c_jobs = grids2d_int3c_jobs(cell, auxcell_short, kptij_lst, chunks)
+    j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
     log.debug1('max_memory = %d MB (%d in use)  chunks %s',
                max_memory, mem_now, chunks)
     log.debug2('j3c_jobs %s', j3c_jobs)
 
     if mydf.metric.upper() == 'S':
-        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+        _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
                 'cint3c1e_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell_short.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
+        s_aux = auxcell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
     else:
-        _aux_e2(cell, auxcell_short, mydf._cderi, kptij_lst, j3c_jobs,
+        _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
                 'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell_short.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
+        s_aux = auxcell.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
         s_aux = [x*2 for x in s_aux]
     s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
-    compress = mdf.compress_Lpq_to_chgcell(auxcell_short, chgcell)
     t1 = log.timer_debug1('Lpq', *t1)
 
-    j3c_workers = _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
+    j3c_workers = _aux_e2(cell, ac_cell, mydf._cderi, kptij_lst, j3c_jobs,
                           'cint3c2e_sph', 'j3c-chunks', max_memory)
     log.debug2('j3c_workers %s', j3c_workers)
     t1 = log.timer_debug1('3c2e', *t1)
     ####
 
     feri = h5py.File(mydf._cderi)
-    def fuse(Lpq, j3c, uniq_k_id, key):
-        Lpq = compress(scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq))
-        del(feri['Lpq'+key])
-        feri['Lpq'+key] = Lpq
-        feri['j3c'+key][:] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
+    def fuse1(Lpq, j3c, uniq_k_id, key):
+        Lpq = scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq)
+        feri['Lpq'+key][:] = Lpq
+        j3c = fuse(j3c[:naux], j3c[naux:])
+        feri['j3c'+key][:naux] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
 
     write_handler = None
     t2 = t1
@@ -364,17 +371,18 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                 key = '-chunks/%d/%d' % (job_id, k)
                 Lpq = numpy.asarray(feri['Lpq'+key])
                 j3c = numpy.asarray(feri['j3c'+key])
-                write_handler = async_write(write_handler, fuse, Lpq, j3c,
+                write_handler = async_write(write_handler, fuse1, Lpq, j3c,
                                             uniq_k_id, key)
                 Lpq = j3c = None
                 t2 = log.alltimer_debug2('fusing %d %d' % (job_id, k), *t2)
     write_handler.join()
-    write_handler = coulG = s_aux = j2c = compress = None
+    write_handler = coulG = s_aux = j2c = None
     t1 = log.alltimer_debug1('distributing Lpq j3c pass1', *t1)
     ####
 
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
-    vbar = mydf.auxbar(auxcell)
+    vbar = mydf.auxbar(ac_cell)
+    vbar = fuse(vbar[:naux] ,vbar[naux:])
     ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
 
     def process(job_id, uniq_kptji_id, sh0, sh1):
@@ -388,8 +396,14 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
 
         j3cR = []
         j3cI = []
-        for idx in adapted_ji_idx:
-            v = numpy.asarray(feri['j3c-chunks/%d/%d'%(job_id,idx)])
+        i0 = ao_loc[sh0]
+        i1 = ao_loc[sh1]
+        for k, idx in enumerate(adapted_ji_idx):
+            v = numpy.asarray(feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux])
+            if is_zero(kpt):
+                for i, c in enumerate(vbar):
+                    if c != 0:
+                        v[i] -= c*.5 * ovlp[k][i0:i1].ravel()
             j3cR.append(numpy.asarray(v.real, order='C'))
             if v.dtype == numpy.complex128:
                 j3cI.append(numpy.asarray(v.imag, order='C'))
@@ -437,36 +451,22 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
                     zdotCN(kLR[p0:p1].T, kLI[p0:p1].T, pqkR.T, pqkI.T,
                            -1, j3cR[k], j3cI[k], 1)
 
-        if is_zero(kpt):
-            i0 = ao_loc[sh0]
-            i1 = ao_loc[sh1]
-            for k, ji in enumerate(adapted_ji_idx):
-                if is_zero(adapted_kptjs[k]):
-                    for i, c in enumerate(vbar):
-                        if c != 0:
-                            j3cR[k][i] -= c*.5 * ovlp[k][i0:i1].real.ravel()
-                else:
-                    for i, c in enumerate(vbar):
-                        if c != 0:
-                            j3cR[k][i] -= c*.5 * ovlp[k][i0:i1].real.ravel()
-                            j3cI[k][i] -= c*.5 * ovlp[k][i0:i1].imag.ravel()
-
         for k, idx in enumerate(adapted_ji_idx):
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
-                feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k]
+                feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux] = j3cR[k]
             else:
-                feri['j3c-chunks/%d/%d'%(job_id,idx)][:] = j3cR[k] + j3cI[k]*1j
+                feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux] = j3cR[k] + j3cI[k]*1j
 
-    def fuse():
+    def fuse1():
         for i, jobs in enumerate(j3c_jobs):
             if j3c_workers[i] == rank:
                 job_id, sh0, sh1 = jobs
                 for k, kpt in enumerate(uniq_kpts):
                     process(job_id, k, sh0, sh1)
 
-    #thread_fusion = lib.background_thread(fuse)
-    fuse()
-    kLRs = kLIs = ovlp = None
+    #thread_fusion = lib.background_thread(fuse1)
+    fuse1()
+    kLRs = kLIs = ovlp = vbar = fuse = fuse1 = None
     t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
 
     if 'Lpq' in feri: del(feri['Lpq'])
@@ -540,13 +540,12 @@ def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
     #kLRs = kLIs = ovlp = None
     #t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
 
-    t2 = t1
     write_handler = None
     for k, kptji in enumerate(kptij_lst):
         for p0, p1 in lib.prange(0, segsize, blksize):
             segs = load('j3c', k, p0, p1)
             write_handler = async_write(write_handler, save, 'j3c', k, p0, p1, segs)
-            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
+            t2 = log.timer_debug1('assemble j3c k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
             segs = None
     write_handler.join()
     write_handler = None
