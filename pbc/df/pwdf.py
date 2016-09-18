@@ -26,13 +26,14 @@ rank = mpi.rank
 def init_PWDF(cell, kpts=numpy.zeros((1,3))):
     mydf = mpi.pool.apply(_init_PWDF_wrap, [cell, kpts], [cell.dumps(), kpts])
     return mydf
+PWDF = init_PWDF
 def _init_PWDF_wrap(args):
     from mpi4pyscf.pbc.df import pwdf
     cell, kpts = args
     if pwdf.rank > 0:
         cell = pwdf.gto.loads(cell)
         cell.verbose = 0
-    return pwdf.mpi.register_for(pwdf.PWDF(cell, kpts))
+    return pwdf.mpi.register_for(pwdf._PWDF(cell, kpts))
 
 def get_nuc(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
@@ -73,7 +74,7 @@ def _get_pp(reg_keys, kpts):
         return vpp
 
 
-class PWDF(pwdf.PWDF):
+class _PWDF(pwdf.PWDF):
     def __enter__(self):
         return self
     def __exit__(self):

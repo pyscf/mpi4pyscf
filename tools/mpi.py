@@ -128,7 +128,8 @@ def allgather(sendbuf):
 
 def alltoall(sendbuf, split_recvbuf=False):
     if isinstance(sendbuf, numpy.ndarray):
-        sendbuf = numpy.asarray(sendbuf, order='C')
+        mpi_dtype = comm.bcast(sendbuf.dtype.char)
+        sendbuf = numpy.asarray(sendbuf, mpi_dtype, 'C')
         nrow = sendbuf.shape[0]
         ncol = sendbuf.size // nrow
         segsize = (nrow+pool.size-1) // pool.size * ncol
@@ -137,19 +138,18 @@ def alltoall(sendbuf, split_recvbuf=False):
         scounts = numpy.append(sdispls[1:]-sdispls[:-1], sendbuf.size-sdispls[-1])
     else:
         assert(len(sendbuf) == pool.size)
-        sendbuf = [numpy.asarray(x).ravel() for x in sendbuf]
+        mpi_dtype = comm.bcast(sendbuf[0].dtype.char)
+        sendbuf = [numpy.asarray(x, mpi_dtype).ravel() for x in sendbuf]
         scounts = numpy.asarray([x.size for x in sendbuf])
         sdispls = numpy.append(0, numpy.cumsum(scounts[:-1]))
         sendbuf = numpy.hstack(sendbuf)
 
-    #mpi_dtype = comm.bcast(sendbuf.dtype.char)
-    #_assert(sendbuf.dtype.char == mpi_dtype)
     rcounts = numpy.asarray(comm.alltoall(scounts))
     rdispls = numpy.append(0, numpy.cumsum(rcounts[:-1]))
 
-    recvbuf = numpy.empty(sum(rcounts), dtype=sendbuf.dtype)
-    comm.Alltoallv([sendbuf.ravel(), scounts, sdispls, sendbuf.dtype.char],
-                   [recvbuf.ravel(), rcounts, rdispls, sendbuf.dtype.char])
+    recvbuf = numpy.empty(sum(rcounts), dtype=mpi_dtype)
+    comm.Alltoallv([sendbuf.ravel(), scounts, sdispls, mpi_dtype],
+                   [recvbuf.ravel(), rcounts, rdispls, mpi_dtype])
     if split_recvbuf:
         return [recvbuf[p0:p0+c] for p0,c in zip(rdispls,rcounts)]
     else:

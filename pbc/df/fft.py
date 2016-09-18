@@ -33,13 +33,14 @@ rank = mpi.rank
 def init_DF(cell, kpts=numpy.zeros((1,3))):
     mydf = mpi.pool.apply(_init_DF_wrap, [cell, kpts], [cell.dumps(), kpts])
     return mydf
+DF = init_DF
 def _init_DF_wrap(args):
     from mpi4pyscf.pbc.df import fft
     cell, kpts = args
     if fft.rank > 0:
         cell = fft.pgto.loads(cell)
         cell.verbose = 0
-    return fft.mpi.register_for(fft.DF(cell, kpts))
+    return fft.mpi.register_for(fft._DF(cell, kpts))
 
 def get_nuc(mydf, kpts=None):
     args = (mydf._reg_keys, kpts)
@@ -165,7 +166,7 @@ def _get_pp(reg_keys, kpts=None):
         return vpp
 
 
-class DF(fft.DF):
+class _DF(fft.DF):
     '''Density expansion on plane waves
     '''
     def __enter__(self):

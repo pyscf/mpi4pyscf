@@ -154,7 +154,6 @@ def _general(reg_keys, mo_coeffs, kpts=None, compact=True):
     if rank != 0:
         return
 
-    mydf = _load_df(reg_keys)
     if isinstance(mo_coeffs, numpy.ndarray) and mo_coeffs.ndim == 2:
         mo_coeffs = (mo_coeffs,) * 4
 

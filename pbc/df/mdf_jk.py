@@ -475,6 +475,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                     vkI[i] -= lib.dot(iLkR.reshape(nao,-1), pLqI.reshape(nao,-1).T)
             pLqR = pLqI = iLkR = iLkI = None
     pqkR = pqkI = coulG = None
+    t1 = logger.alltimer_debug2(mydf, 'get_jk pass1', *t1)
 
     bufR = numpy.empty((mydf.blockdim*nao**2))
     bufI = numpy.empty((mydf.blockdim*nao**2))
@@ -528,6 +529,8 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     if with_k:
         vkR = mpi.reduce(vkR)
         vkI = mpi.reduce(vkI)
+    t1 = logger.alltimer_debug2(mydf, 'get_jk pass2', *t1)
+
     if rank == 0:
         if with_j:
             if j_real:
