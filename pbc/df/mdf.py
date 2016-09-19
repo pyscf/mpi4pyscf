@@ -221,9 +221,7 @@ def _build(reg_keys, j_only=False, with_j3c=True):
         log.debug('Set smooth gaussian eta to %.9g', mydf.eta)
     mydf.dump_flags()
 
-    auxcell = make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
-    chgcell = make_modchg_basis(auxcell, mydf.eta)
-    mydf.auxcell = auxcell
+    mydf.auxcell = make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
 
     mydf._j_only = j_only
     if j_only:
@@ -243,13 +241,13 @@ def _build(reg_keys, j_only=False, with_j3c=True):
         if mydf.approx_sr_level != 0:
             raise NotImplementedError
 
-        _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst)
+        _make_j3c(mydf, cell, mydf.auxcell, kptij_lst)
         t1 = log.timer_debug1('_make_j3c', *t1)
     else:
         raise NotImplementedError
     return mydf
 
-def _make_j3c(mydf, cell, auxcell, chgcell, kptij_lst):
+def _make_j3c(mydf, cell, auxcell, kptij_lst):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = t0 = (time.clock(), time.time())
     fused_cell, fuse = fuse_auxcell_(mydf, mydf.auxcell)

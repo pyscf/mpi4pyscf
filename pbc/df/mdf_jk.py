@@ -107,13 +107,12 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
             rhoI-= numpy.dot(dmsR[i,k], pqkI)
             vR[i,p0:p1] += rhoR * coulG[p0:p1]
             vI[i,p0:p1] += rhoI * coulG[p0:p1]
+        pqkR = pqkI = None
     weight = 1./nkpts
     vR *= weight
     vI *= weight
     vR = mpi.allreduce(vR)
     vI = mpi.allreduce(vI)
-
-    pqkR = pqkI = coulG = None
     t1 = log.timer_debug1('get_j pass 1 to compute J(G)', *t1)
 
     if kpt_band is None:
@@ -131,7 +130,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
             if not j_real:
                 vjI[i,k] += numpy.dot(pqkI, vR[i,p0:p1])
                 vjI[i,k] += numpy.dot(pqkR, vI[i,p0:p1])
-        pqkR = pqkI = coulG = None
+        pqkR = pqkI = None
 
     rhoR  = numpy.zeros((nset,naux))
     rhoI  = numpy.zeros((nset,naux))
@@ -154,6 +153,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
             jauxR[:,p0:p1]-= numpy.einsum('Lp,xp->xL', j3cI, dmsI[:,k])
             jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cR, dmsI[:,k])
             jauxI[:,p0:p1]+= numpy.einsum('Lp,xp->xL', j3cI, dmsR[:,k])
+            LpqR = LpqI = j3cR = j3cI = None
 
     weight = 1./nkpts
     jauxR *= weight
@@ -180,6 +180,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
                 v += numpy.dot(rhoR [:,p0:p1], j3cI)
                 v += numpy.dot(rhoI [:,p0:p1], j3cR)
                 vjI[:,k] += lib.unpack_tril(v, lib.ANTIHERMI)
+            LpqR = LpqI = j3cR = j3cI = None
     t1 = log.timer_debug1('get_j pass 2', *t1)
 
     vjR = mpi.reduce(vjR)
@@ -289,8 +290,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                     zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
                            iLkR.reshape(-1,nao), iLkI.reshape(-1,nao),
                            1, vkR[i,kj], vkI[i,kj], 1)
-            pLqR = pLqI = iLkR = iLkI = None
-        pqkR = pqkI = iLkR = iLkI = coulG = None
+            pqkR = pqkI = coulG = pLqR = pLqI = iLkR = iLkI = None
 
         # Note: kj-ki for electorn 1 and ki-kj for electron 2
         # j2c ~ ({kj-ki}|{ks-kr}) ~ ({kj-ki}|-{kj-ki}) ~ ({kj-ki}|{ki-kj})
@@ -345,6 +345,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                             zdotNC(tmpR.reshape(nao,-1), tmpI.reshape(nao,-1),
                                    j3cR.reshape(nao,-1).T, j3cI.reshape(nao,-1).T,
                                    1, vkR[i,ki], vkI[i,ki], 1)
+                LpqR = LpqI = j3cR = j3cI = None
         return None
 
     for ki, kpti in enumerate(kpts_band):
@@ -430,6 +431,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     mem_now = lib.current_memory()[0]
     max_memory = (mydf.max_memory - mem_now) * .8
     log.alldebug1('max_memory = %d MB (%d in use)', max_memory, mem_now)
+    t2 = t1
 
     # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
     #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
@@ -473,9 +475,10 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                 if not k_real:
                     vkI[i] += lib.dot(iLkI.reshape(nao,-1), pLqR.reshape(nao,-1).T)
                     vkI[i] -= lib.dot(iLkR.reshape(nao,-1), pLqI.reshape(nao,-1).T)
-            pLqR = pLqI = iLkR = iLkI = None
-    pqkR = pqkI = coulG = None
-    t1 = logger.alltimer_debug2(mydf, 'get_jk pass1', *t1)
+        pqkR = pqkI = coulG = pLqR = pLqI = iLkR = iLkI = None
+        #t2 = log.alltimer_debug2('%d:%d'%(p0,p1), *t2)
+        #log.alldebug2('memory in use %d', lib.current_memory()[0])
+    t1 = log.alltimer_debug2('get_jk pass 1', *t1)
 
     bufR = numpy.empty((mydf.blockdim*nao**2))
     bufI = numpy.empty((mydf.blockdim*nao**2))
@@ -523,13 +526,16 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                     zdotCN(j3cR.reshape(-1,nao).T, j3cI.reshape(-1,nao).T,
                            tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
                            1, vkR[i], vkI[i], 1)
+        LpqR = LpqI = j3cR = j3cI = None
+        #t2 = log.alltimer_debug2('%d:%d'%(p0,p1), *t2)
+        #log.alldebug2('memory in use %d', lib.current_memory()[0])
     if with_j:
         vjR = mpi.reduce(vjR)
         vjI = mpi.reduce(vjI)
     if with_k:
         vkR = mpi.reduce(vkR)
         vkI = mpi.reduce(vkI)
-    t1 = logger.alltimer_debug2(mydf, 'get_jk pass2', *t1)
+    t1 = log.alltimer_debug2('get_jk pass 2', *t1)
 
     if rank == 0:
         if with_j:
