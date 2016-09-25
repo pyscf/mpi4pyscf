@@ -254,6 +254,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     ao_loc = cell.ao_loc_nr()
     nao = ao_loc[-1]
     naux = auxcell.nao_nr()
+    nkptij = len(kptij_lst)
 
     gs = mydf.gs
     gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
@@ -300,7 +301,20 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         kLRs.append(kLR)
         kLIs.append(kLI)
         aoaux = kLR = kLI = j2cR = j2cI = coulG = None
-    t1 = log.timer_debug1('aoaux', *t1)
+
+    aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
+    j_only = numpy.all(aosym_s2)
+    vbar = mydf.auxbar(fused_cell)
+    vbar = fuse(vbar)
+    ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
+
+    if mydf.metric.upper() == 'S':
+        s_aux = auxcell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
+    else:
+        s_aux = auxcell.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
+        s_aux = [x*2 for x in s_aux]
+    s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
+    t1 = log.timer_debug1('aoaux and int2c', *t1)
 
 # Estimates the buffer size based on the last contraction in G-space.
 # This contraction requires to hold nkptj copies of (naux,?) array
@@ -310,71 +324,90 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
     buflen = int(min(max(max_memory*.5e6/16/naux/(nkptj_max+1)/nao, 1),
-                     nao/mpi.pool.size+3, nao))
+                     nao/3/mpi.pool.size))
     chunks = (buflen, nao)
 
     j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
     log.debug1('max_memory = %d MB (%d in use)  chunks %s',
                max_memory, mem_now, chunks)
     log.debug2('j3c_jobs %s', j3c_jobs)
-
     if mydf.metric.upper() == 'S':
-        _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
-                'cint3c1e_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=uniq_kpts)
+        Lpq_intor = 'cint3c1e_sph'
     else:
-        _aux_e2(cell, auxcell, mydf._cderi, kptij_lst, j3c_jobs,
-                'cint3c1e_p2_sph', 'Lpq-chunks', max_memory)
-        s_aux = auxcell.pbc_intor('cint1e_kin_sph', hermi=1, kpts=uniq_kpts)
-        s_aux = [x*2 for x in s_aux]
-    s_aux = [scipy.linalg.cho_factor(x) for x in s_aux]
-    t1 = log.timer_debug1('Lpq', *t1)
+        Lpq_intor = 'cint3c1e_p2_sph'
 
-    j3c_workers = _aux_e2(cell, fused_cell, mydf._cderi, kptij_lst, j3c_jobs,
-                          'cint3c2e_sph', 'j3c-chunks', max_memory)
-    log.debug2('j3c_workers %s', j3c_workers)
-    t1 = log.timer_debug1('3c2e', *t1)
-    ####
+    if h5py.is_hdf5(mydf._cderi):
+        feri = h5py.File(mydf._cderi)
+    else:
+        feri = h5py.File(mydf._cderi, 'w')
 
-    feri = h5py.File(mydf._cderi)
-    def fuse1(Lpq, j3c, uniq_k_id, key):
-        Lpq = scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq)
-        feri['Lpq'+key][:] = Lpq
-        j3c = fuse(j3c)
-        feri['j3c'+key][:naux] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
+    def gen_int3c(auxcell, intor, label, job_id, ish0, ish1):
+        aux_loc = auxcell.ao_loc_nr('ssc' in intor)
+        naux = aux_loc[-1]
+        dataname = '%s/%d' % (label, job_id)
+        if dataname in feri:
+            del(feri[dataname])
 
-    write_handler = None
-    t2 = t1
-    for i, jobs in enumerate(j3c_jobs):
-        if j3c_workers[i] == rank:
-            job_id = jobs[0]
+        xyz = numpy.asarray(cell.atom_coords(), order='C')
+        ptr_coordL = cell._atm[:,PTR_COORD]
+        ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
+        Ls = cell.get_lattice_Ls(cell.nimgs)
+
+        di = ao_loc[ish1] - ao_loc[ish0]
+        dij = di * nao
+        buflen = max(8, int(max_memory*1e6/16/(nkptij*dij)))
+        auxranges = balance_segs(aux_loc[1:]-aux_loc[:-1], buflen)
+        buflen = max([x[2] for x in auxranges])
+        buf = [numpy.zeros(dij*buflen, dtype=numpy.complex128) for k in range(nkptij)]
+
+        ints = incore._wrap_int3c(cell, auxcell, intor, 1, Ls, buf)
+        atm, bas, env = ints._envs[:3]
+
+        for kpt_id, kptij in enumerate(kptij_lst):
+            key = '%s/%d' % (dataname, kpt_id)
+            shape = (naux, dij)
+            if gamma_point(kptij):
+                feri.create_dataset(key, shape, 'f8')
+            else:
+                feri.create_dataset(key, shape, 'c16')
+
+        naux0 = 0
+        for istep, auxrange in enumerate(auxranges):
+            log.alldebug2("aux_e2 %s job_id %d step %d", label, job_id, istep)
+            sh0, sh1, nrow = auxrange
+            c_shls_slice = (ctypes.c_int*6)(ish0, ish1, cell.nbas, cell.nbas*2,
+                                            cell.nbas*2+sh0,
+                                            cell.nbas*2+sh1)
+            if j_only:
+                for l, L1 in enumerate(Ls):
+                    env[ptr_coordL] = xyz + L1
+                    e = numpy.dot(Ls[:l+1]-L1, kptjs.T)  # Lattice sum over half of the images {1..l}
+                    exp_Lk = numpy.exp(1j * numpy.asarray(e, order='C'))
+                    exp_Lk[l] = .5
+                    ints(exp_Lk, c_shls_slice)
+            else:
+                for l, L1 in enumerate(Ls):
+                    env[ptr_coordL] = xyz + L1
+                    e = numpy.dot(Ls, kptjs.T) - numpy.dot(L1, kptis.T)
+                    exp_Lk = numpy.exp(1j * numpy.asarray(e, order='C'))
+                    ints(exp_Lk, c_shls_slice)
+
             for k, kptij in enumerate(kptij_lst):
-                uniq_k_id = uniq_inverse[k]
-                key = '-chunks/%d/%d' % (job_id, k)
-                Lpq = numpy.asarray(feri['Lpq'+key])
-                j3c = numpy.asarray(feri['j3c'+key])
-                write_handler = async_write(write_handler, fuse1, Lpq, j3c,
-                                            uniq_k_id, key)
-                Lpq = j3c = None
-                t2 = log.alltimer_debug2('fusing %d %d' % (job_id, k), *t2)
-    if write_handler is not None:
-        write_handler.join()
-    write_handler = coulG = s_aux = j2c = None
-    t1 = log.alltimer_debug1('distributing Lpq j3c pass1', *t1)
-    ####
+                h5dat = feri['%s/%d'%(dataname,k)]
+                mat = numpy.ndarray((di,nao,nrow), order='F',
+                                    dtype=numpy.complex128, buffer=buf[k])
+                mat = mat.transpose(2,0,1)
+                if gamma_point(kptij):
+                    mat = mat.real
+                h5dat[naux0:naux0+nrow] = mat.reshape(nrow,-1)
+                mat[:] = 0
+            naux0 += nrow
 
-    aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
-    j_only = numpy.all(aosym_s2)
     if j_only:
         ccsum_fac = .5
     else:
         ccsum_fac = 1
-    vbar = mydf.auxbar(fused_cell)
-    vbar = fuse(vbar)
-    ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
-
-    def process(job_id, uniq_kptji_id, sh0, sh1):
-        log.alldebug2("ft-fuse job_id %d uniq_kptji_id %d", job_id, uniq_kptji_id)
+    def ft_fuse(job_id, uniq_kptji_id, sh0, sh1):
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
         adapted_ji_idx = numpy.where(uniq_inverse == uniq_kptji_id)[0]
         adapted_kptjs = kptjs[adapted_ji_idx]
@@ -399,7 +432,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 j3cI.append(None)
             v = None
 
-        max_memory = max(2000, mydf.max_memory - lib.current_memory()[0])
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
         Gblksize = min(Gblksize, ngs)
@@ -445,17 +477,44 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             else:
                 feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux] = j3cR[k] + j3cI[k]*1j
 
-    def fuse1():
-        for i, jobs in enumerate(j3c_jobs):
-            if j3c_workers[i] == rank:
-                job_id, sh0, sh1 = jobs
-                for k, kpt in enumerate(uniq_kpts):
-                    process(job_id, k, sh0, sh1)
+    def fuse_j3c(Lpq, j3c, uniq_k_id, key):
+        Lpq = scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq)
+        feri['Lpq'+key][:] = Lpq
+        j3c = fuse(j3c)
+        feri['j3c'+key][:naux] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
 
-    #thread_fusion = lib.background_thread(fuse1)
-    fuse1()
-    kLRs = kLIs = ovlp = vbar = fuse = fuse1 = None
-    t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
+    t2 = t1
+    j3c_workers = numpy.zeros(len(j3c_jobs), dtype=int)
+    write_handler = None
+    #for job_id, ish0, ish1 in mpi.work_share_partition(j3c_jobs):
+    for job_id, ish0, ish1 in mpi.work_stealing_partition(j3c_jobs):
+        gen_int3c(auxcell, Lpq_intor, 'Lpq-chunks', job_id, ish0, ish1)
+        t2 = log.alltimer_debug2('int Lpq %d' % job_id, *t2)
+        gen_int3c(fused_cell, 'cint3c2e_sph', 'j3c-chunks', job_id, ish0, ish1)
+        t2 = log.alltimer_debug2('int j3c %d' % job_id, *t2)
+
+        for k, kpt in enumerate(uniq_kpts):
+            ft_fuse(job_id, k, ish0, ish1)
+            t2 = log.alltimer_debug2('ft-fuse %d %d' % (job_id, k), *t2)
+
+        for k, kptij in enumerate(kptij_lst):
+            uniq_k_id = uniq_inverse[k]
+            key = '-chunks/%d/%d' % (job_id, k)
+            Lpq = numpy.asarray(feri['Lpq'+key])
+            j3c = numpy.asarray(feri['j3c'+key])
+            write_handler = async_write(write_handler, fuse_j3c, Lpq, j3c,
+                                        uniq_k_id, key)
+            Lpq = j3c = None
+            t2 = log.alltimer_debug2('fusing %d %d' % (job_id, k), *t2)
+        if write_handler is not None:
+            write_handler.join()
+        write_handler = None
+
+        j3c_workers[job_id] = rank
+    j3c_workers = mpi.allreduce(j3c_workers)
+    log.debug2('j3c_workers %s', j3c_workers)
+    s_aux = j2c = kLRs = kLIs = ovlp = vbar = fuse = fuse_j3c = None
+    t1 = log.timer_debug1('int3c and fuse', *t1)
 
     if 'Lpq' in feri: del(feri['Lpq'])
     if 'j3c' in feri: del(feri['j3c'])
@@ -476,7 +535,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
     dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
-    dims = [dims[j3c_workers==w].sum() * nao for w in range(mpi.pool.size)]
+    dims = numpy.hstack([dims[j3c_workers==w] * nao for w in range(mpi.pool.size)])
+    job_idx = numpy.hstack([numpy.where(j3c_workers==w)[0]
+                            for w in range(mpi.pool.size)])
+    segs_loc = numpy.append(0, numpy.cumsum(dims))
+    segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
     def load(label, k, p0, p1):
         slices = [(min(i*segsize+p0,naux), min(i*segsize+p1, naux))
                   for i in range(mpi.pool.size)]
@@ -486,7 +549,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             for job_id, worker in enumerate(j3c_workers):
                 if rank == worker:
                     key = '-chunks/%d/%d' % (job_id, k)
-                    val.append(feri[label+key][p0:p1])
+                    val.append(feri[label+key][p0:p1].ravel())
             if val:
                 segs.append(numpy.hstack(val))
             else:
@@ -495,8 +558,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
 
     def save(label, k, p0, p1, segs):
         loc0, loc1 = min(p0, naux-naux0), min(p1, naux-naux0)
-        segs = mpi.alltoall(segs, True)
-        segs = numpy.hstack([x.reshape(loc1-loc0,dims[i]) for i,x in enumerate(segs)])
+        nL = loc1 - loc0
+        segs = mpi.alltoall(segs)
+        segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
+        segs = numpy.hstack(segs)
         if j_only:
             segs = lib.hermi_sum(segs.reshape(-1,nao,nao), axes=(0,2,1))
         if aosym_s2[k]:
@@ -525,10 +590,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             segs = None
     if write_handler is not None:
         write_handler.join()
-    write_handler = None
-    #thread_fusion.join()
-    #kLRs = kLIs = ovlp = None
-    #t1 = log.alltimer_debug1('fusing Lpq j3c pass2', *t1)
 
     write_handler = None
     for k, kptji in enumerate(kptij_lst):
@@ -606,109 +667,6 @@ def _int_nuc_vloc(cell, nuccell, kpts):
     nuc = nuc + nuc.transpose(0,2,1).conj()
 # nuc is mpi.reduced in get_nuc function
     return nuc
-
-def _assign_kpts_task(kpts, kptij_lst):
-    mask = numpy.zeros(len(kptij_lst), dtype=bool)
-    kpts_ji = kptij_lst[:,1] - kptij_lst[:,0]
-    uniq_kpts, uniq_index, uniq_inverse = unique(kpts_ji)
-
-    for kpt in mpi.static_partition(uniq_kptji):
-        mask |= numpy.einsum('ki->k', abs(kpts_ji-kpt)) < 1e-9
-
-    worker = numpy.zeros(len(kptij_lst), dtype=int)
-    worker[mask] = rank
-    worker = mpi.allreduce(worker)
-    return worker
-
-# Compute only half of the integrals for aosym='s2'
-def _aux_e2(cell, auxcell, erifile, kptij_lst, all_jobs,
-            intor='cint3c2e_sph', label='j3c', max_memory=2000):
-    ao_loc = cell.ao_loc_nr()
-    aux_loc = auxcell.ao_loc_nr('ssc' in intor)
-    nao = ao_loc[-1]
-    naux = aux_loc[-1]
-    nkptij = len(kptij_lst)
-
-    xyz = numpy.asarray(cell.atom_coords(), order='C')
-    ptr_coordL = cell._atm[:,PTR_COORD]
-    ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-
-    kpti = kptij_lst[:,0]
-    kptj = kptij_lst[:,1]
-    aosym_s2 = numpy.einsum('ix->i', abs(kpti-kptj)) < 1e-9
-    Ls = cell.get_lattice_Ls(cell.nimgs)
-
-    if h5py.is_hdf5(erifile):
-        feri = h5py.File(erifile)
-    else:
-        feri = h5py.File(erifile, 'w')
-
-    def estimate_costs(all_jobs):
-        l = cell._bas[:,1]
-        nprim = cell._bas[:,2]
-        dims = (l*2+1) * nprim
-        pgto_loc = numpy.append(0, dims.cumsum())
-        costs = [(pgto_loc[i1]-pgto_loc[i0]) for x, i0, i1 in all_jobs]
-        return costs
-    workers = numpy.zeros(len(all_jobs), dtype=int)
-    costs = estimate_costs(all_jobs)
-    for job_id, ish0, ish1 in mpi.work_balanced_partition(all_jobs, costs):
-        dataname = '%s/%d' % (label, job_id)
-        if dataname in feri:
-            del(feri[dataname])
-
-        di = ao_loc[ish1] - ao_loc[ish0]
-        dij = di * nao
-        buflen = max(8, int(max_memory*1e6/16/(nkptij*dij)))
-        auxranges = balance_segs(aux_loc[1:]-aux_loc[:-1], buflen)
-        buflen = max([x[2] for x in auxranges])
-        buf = [numpy.zeros(dij*buflen, dtype=numpy.complex128) for k in range(nkptij)]
-        ints = incore._wrap_int3c(cell, auxcell, intor, 1, Ls, buf)
-        atm, bas, env = ints._envs[:3]
-
-        for kpt_id, kptij in enumerate(kptij_lst):
-            key = '%s/%d' % (dataname, kpt_id)
-            shape = (naux, dij)
-            if gamma_point(kptij):
-                feri.create_dataset(key, shape, 'f8')
-            else:
-                feri.create_dataset(key, shape, 'c16')
-
-        naux0 = 0
-        for istep, auxrange in enumerate(auxranges):
-            logger.alldebug2(cell, "aux_e2 job_id %d step %d", job_id, istep)
-            sh0, sh1, nrow = auxrange
-            c_shls_slice = (ctypes.c_int*6)(ish0, ish1, cell.nbas, cell.nbas*2,
-                                            cell.nbas*2+sh0,
-                                            cell.nbas*2+sh1)
-            if numpy.all(aosym_s2):
-                for l, L1 in enumerate(Ls):
-                    env[ptr_coordL] = xyz + L1
-                    e = numpy.dot(Ls[:l+1]-L1, kptj.T)  # Lattice sum over half of the images {1..l}
-                    exp_Lk = numpy.exp(1j * numpy.asarray(e, order='C'))
-                    exp_Lk[l] = .5
-                    ints(exp_Lk, c_shls_slice)
-            else:
-                for l, L1 in enumerate(Ls):
-                    env[ptr_coordL] = xyz + L1
-                    e = numpy.dot(Ls, kptj.T) - numpy.dot(L1, kpti.T)
-                    exp_Lk = numpy.exp(1j * numpy.asarray(e, order='C'))
-                    ints(exp_Lk, c_shls_slice)
-
-            for k, kptij in enumerate(kptij_lst):
-                h5dat = feri['%s/%d'%(dataname,k)]
-                mat = numpy.ndarray((di,nao,nrow), order='F',
-                                    dtype=numpy.complex128, buffer=buf[k])
-                mat = mat.transpose(2,0,1)
-                if gamma_point(kptij):
-                    mat = mat.real
-                h5dat[naux0:naux0+nrow] = mat.reshape(nrow,-1)
-                mat[:] = 0
-            naux0 += nrow
-        workers[job_id] = rank
-    feri.close()
-    workers = mpi.allreduce(workers)
-    return workers
 
 def is_zero(kpt):
     return abs(kpt).sum() < mdf.KPT_DIFF_TOL

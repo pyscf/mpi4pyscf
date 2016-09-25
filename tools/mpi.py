@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 
 import sys
+import time
+import threading
 import traceback
 import numpy
 from mpi4py import MPI
@@ -47,16 +49,112 @@ def work_balanced_partition(tasks, costs=None):
     else:
         return tasks[:0]
 
-def tasks_location(partition):
-    '''A list to store the proccessor ID that each task is assigned to'''
-    def tasks_loc(tasks, *args, **kwargs):
-        work_map = numpy.zeros(len(tasks), dtype=int)
-        tasks_ids = numpy.arange(len(tasks))
-        for idx in partition(tasks_ids, *args, **kwargs):
-            work_map[idx] = rank
-        work_map = allreduce(work_map)
-        return work_map
-    return tasks_loc
+INQUIRY = 50050
+TASK = 50051
+def work_share_partition(tasks, interval=.01, loadmin=1):
+    loadmin = max(loadmin, len(tasks)//50//pool.size)
+    rest_tasks = [x for x in tasks[loadmin*pool.size:]]
+    tasks = tasks[loadmin*rank:loadmin*rank+loadmin]
+    def distribute_task():
+        while True:
+            load = len(tasks)
+            if rank == 0:
+                for i in range(pool.size):
+                    if i != 0:
+                        load = comm.recv(source=i, tag=INQUIRY)
+                    if rest_tasks:
+                        if load <= loadmin:
+                            task = rest_tasks.pop(0)
+                            comm.send(task, i, tag=TASK)
+                    else:
+                        comm.send('OUT_OF_TASK', i, tag=TASK)
+            else:
+                comm.send(load, 0, tag=INQUIRY)
+            if comm.Iprobe(source=0, tag=TASK):
+                tasks.append(comm.recv(source=0, tag=TASK))
+                if tasks[-1] == 'OUT_OF_TASK':
+                    return
+            time.sleep(interval)
+
+    tasks_handler = threading.Thread(target=distribute_task)
+    tasks_handler.start()
+
+    while True:
+        if tasks:
+            task = tasks.pop(0)
+            if task == 'OUT_OF_TASK':
+                tasks_handler.join()
+                return
+            yield task
+
+def work_stealing_partition(tasks, interval=.01):
+    tasks = static_partition(tasks)
+    interval = [interval]
+    out_of_task = [False]
+    def task_daemon():
+        while True:
+            time.sleep(interval[0])
+            if comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
+                src, req = comm.recv(source=MPI.ANY_SOURCE, tag=INQUIRY)
+                if req == 'STOP_DAEMON':
+                    return
+                elif src == 0 and req == 'ALL_DONE':
+                    comm.send(out_of_task[0], src, tag=TASK)
+                elif out_of_task[0]:
+                    comm.send('OUT_OF_TASK', src, tag=TASK)
+                elif tasks:
+                    task = tasks.pop()
+                    comm.send(task, src, tag=TASK)
+                else:
+                    comm.send('BYPASS', src, tag=TASK)
+    def prepare_to_stop():
+        interval[0] = 0
+        out_of_task[0] = True
+        if rank == 0:
+            while True:
+                done = []
+                for i in range(1, pool.size):
+                    comm.send((0,'ALL_DONE'), i, tag=INQUIRY)
+                    done.append(comm.recv(source=i, tag=TASK))
+                if all(done):
+                    break
+            for i in range(pool.size):
+                comm.send((0,'STOP_DAEMON'), i, tag=INQUIRY)
+        tasks_handler.join()
+
+    if pool.size > 1:
+        tasks_handler = threading.Thread(target=task_daemon)
+        tasks_handler.start()
+
+    while tasks:
+        task = tasks.pop(0)
+        yield task
+
+    if pool.size > 1:
+        def next_proc(proc):
+            proc = (proc+1) % pool.size
+            if proc == rank:
+                proc = (proc+1) % pool.size
+            return proc
+        proc_last = (rank + 1) % pool.size
+        proc = next_proc(proc_last)
+
+        while True:
+            comm.send((rank,None), proc, tag=INQUIRY)
+            task = comm.recv(source=proc, tag=TASK)
+            if task == 'OUT_OF_TASK':
+                prepare_to_stop()
+                return
+            elif task == 'BYPASS':
+                if proc == proc_last:
+                    prepare_to_stop()
+                    return
+                else:
+                    proc = next_proc(proc)
+            else:
+                if proc != proc_last:
+                    proc_last, proc = proc, next_proc(proc)
+                yield task
 
 def bcast(buf, root=0):
     buf = numpy.asarray(buf, order='C')

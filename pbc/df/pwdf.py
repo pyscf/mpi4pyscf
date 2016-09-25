@@ -84,13 +84,16 @@ class _PWDF(pwdf.PWDF):
 
     def prange(self, start, stop, step=None):
         # affect pw_loop and ft_loop function
+        size = stop - start
         mpi_size = mpi.pool.size
+        segsize = (size+mpi_size-1) // mpi_size
         if step is None:
-            step = (stop-start+mpi_size-1) // mpi_size
+            step = segsize
         else:
-            step = min(step, (stop-start+mpi_size-1)//mpi_size)
-        task_lst = [(p0,p1) for p0, p1 in lib.prange(start, stop, step)]
-        return mpi.static_partition(task_lst)
+            step = min(step, segsize)
+        start = min(size, start + rank * segsize)
+        stop = min(size, start + segsize)
+        return lib.prange(start, stop, step)
     mpi_prange = prange
 
     get_nuc = get_nuc
