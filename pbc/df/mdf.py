@@ -101,6 +101,7 @@ def _get_nuc(reg_keys, kpts=None):
             vj[k] += numpy.einsum('k,xk->x', vGI[p0:p1], pqkR) *-1j
         vj[k] += numpy.einsum('k,xk->x', vGR[p0:p1], pqkR)
         vj[k] += numpy.einsum('k,xk->x', vGI[p0:p1], pqkI)
+        pqkR = pqkI = None
     t1 = log.timer_debug1('contracting Vnuc', *t1)
 
     vj = vj.reshape(-1,nao,nao)
@@ -323,8 +324,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     max_memory = max(2000, mydf.max_memory - mem_now)
     #nkptj_max = max(numpy.unique(uniq_inverse, return_counts=True)[1])
     nkptj_max = max((uniq_inverse==x).sum() for x in set(uniq_inverse))
-    buflen = int(min(max(max_memory*.5e6/16/naux/(nkptj_max+1)/nao, 1),
-                     nao/3/mpi.pool.size))
+    #buflen = max(int(min(numpy.sqrt(max_memory*.5e6/16/naux/(nkptj_max+2)),
+    #                     nao/3/numpy.sqrt(mpi.pool.size))), 1)
+    #chunks = (buflen, buflen)
+    buflen = max(int(min(max_memory*.5e6/16/naux/(nkptj_max+2)/nao,
+                         nao/3/mpi.pool.size)), 1)
     chunks = (buflen, nao)
 
     j3c_jobs = grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks)
@@ -403,6 +407,17 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 mat[:] = 0
             naux0 += nrow
 
+    def fuse_j3c(Lpq, j3c, uniq_k_id, key, j3cR, j3cI):
+        Lpq = scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq)
+        feri['Lpq'+key][:] = Lpq
+        j3c = fuse(j3c)
+        j3c = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
+        j3cR.append(numpy.asarray(j3c.real, order='C'))
+        if j3c.dtype == numpy.complex128:
+            j3cI.append(numpy.asarray(j3c.imag, order='C'))
+        else:
+            j3cI.append(None)
+
     if j_only:
         ccsum_fac = .5
     else:
@@ -415,22 +430,25 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         kLR = kLRs[uniq_kptji_id]
         kLI = kLIs[uniq_kptji_id]
 
+        write_handler = None
         j3cR = []
         j3cI = []
         i0 = ao_loc[sh0]
         i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
-            v = numpy.asarray(feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux])
+            key = '-chunks/%d/%d' % (job_id, k)
+            Lpq = numpy.asarray(feri['Lpq'+key])
+            j3c = numpy.asarray(feri['j3c'+key])
             if is_zero(kpt):
                 for i, c in enumerate(vbar):
                     if c != 0:
-                        v[i] -= c*ccsum_fac * ovlp[k][i0:i1].ravel()
-            j3cR.append(numpy.asarray(v.real, order='C'))
-            if v.dtype == numpy.complex128:
-                j3cI.append(numpy.asarray(v.imag, order='C'))
-            else:
-                j3cI.append(None)
-            v = None
+                        j3c[i] -= c*ccsum_fac * ovlp[k][i0:i1].ravel()
+            write_handler = async_write(write_handler, fuse_j3c, Lpq, j3c,
+                                        uniq_kptji_id, key, j3cR, j3cI)
+            Lpq = j3c = None
+        if write_handler is not None:
+            write_handler.join()
+        write_handler = None
 
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
@@ -439,8 +457,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         pqkIbuf = numpy.empty(ncol*Gblksize)
         # buf for ft_aopair
         buf = numpy.zeros((nkptj,ncol*Gblksize), dtype=numpy.complex128)
-        log.alldebug2("max_memory %d MB  blksize (%d,%d)",
-                      max_memory, Gblksize, ncol)
+        log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
 
         shls_slice = (sh0, sh1, 0, cell.nbas)
         ni = ncol // nao
@@ -477,15 +494,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             else:
                 feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux] = j3cR[k] + j3cI[k]*1j
 
-    def fuse_j3c(Lpq, j3c, uniq_k_id, key):
-        Lpq = scipy.linalg.cho_solve(s_aux[uniq_k_id], Lpq)
-        feri['Lpq'+key][:] = Lpq
-        j3c = fuse(j3c)
-        feri['j3c'+key][:naux] = lib.dot(j2c[uniq_k_id], Lpq, -.5, j3c, 1)
-
     t2 = t1
     j3c_workers = numpy.zeros(len(j3c_jobs), dtype=int)
-    write_handler = None
     #for job_id, ish0, ish1 in mpi.work_share_partition(j3c_jobs):
     for job_id, ish0, ish1 in mpi.work_stealing_partition(j3c_jobs):
         gen_int3c(auxcell, Lpq_intor, 'Lpq-chunks', job_id, ish0, ish1)
@@ -495,20 +505,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
 
         for k, kpt in enumerate(uniq_kpts):
             ft_fuse(job_id, k, ish0, ish1)
-            t2 = log.alltimer_debug2('ft-fuse %d %d' % (job_id, k), *t2)
-
-        for k, kptij in enumerate(kptij_lst):
-            uniq_k_id = uniq_inverse[k]
-            key = '-chunks/%d/%d' % (job_id, k)
-            Lpq = numpy.asarray(feri['Lpq'+key])
-            j3c = numpy.asarray(feri['j3c'+key])
-            write_handler = async_write(write_handler, fuse_j3c, Lpq, j3c,
-                                        uniq_k_id, key)
-            Lpq = j3c = None
-            t2 = log.alltimer_debug2('fusing %d %d' % (job_id, k), *t2)
-        if write_handler is not None:
-            write_handler.join()
-        write_handler = None
+            t2 = log.alltimer_debug2('ft-fuse %d k %d' % (job_id, k), *t2)
 
         j3c_workers[job_id] = rank
     j3c_workers = mpi.allreduce(j3c_workers)
@@ -584,20 +581,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     write_handler = None
     for k, kptji in enumerate(kptij_lst):
         for p0, p1 in lib.prange(0, segsize, blksize):
-            segs = load('Lpq', k, p0, p1)
-            write_handler = async_write(write_handler, save, 'Lpq', k, p0, p1, segs)
-            t2 = log.timer_debug1('assemble Lpq k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
-            segs = None
-    if write_handler is not None:
-        write_handler.join()
-
-    write_handler = None
-    for k, kptji in enumerate(kptij_lst):
-        for p0, p1 in lib.prange(0, segsize, blksize):
             segs = load('j3c', k, p0, p1)
             write_handler = async_write(write_handler, save, 'j3c', k, p0, p1, segs)
-            t2 = log.timer_debug1('assemble j3c k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
             segs = None
+            segs = load('Lpq', k, p0, p1)
+            write_handler = async_write(write_handler, save, 'Lpq', k, p0, p1, segs)
+            segs = None
+            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
     if write_handler is not None:
         write_handler.join()
     write_handler = None

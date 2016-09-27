@@ -51,7 +51,7 @@ def work_balanced_partition(tasks, costs=None):
 
 INQUIRY = 50050
 TASK = 50051
-def work_share_partition(tasks, interval=.01, loadmin=1):
+def work_share_partition(tasks, interval=.02, loadmin=1):
     loadmin = max(loadmin, len(tasks)//50//pool.size)
     rest_tasks = [x for x in tasks[loadmin*pool.size:]]
     tasks = tasks[loadmin*rank:loadmin*rank+loadmin]
@@ -87,28 +87,25 @@ def work_share_partition(tasks, interval=.01, loadmin=1):
                 return
             yield task
 
-def work_stealing_partition(tasks, interval=.01):
+def work_stealing_partition(tasks, interval=.02):
     tasks = static_partition(tasks)
-    interval = [interval]
     out_of_task = [False]
     def task_daemon():
         while True:
-            time.sleep(interval[0])
-            if comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
+            time.sleep(interval)
+            while comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
                 src, req = comm.recv(source=MPI.ANY_SOURCE, tag=INQUIRY)
                 if req == 'STOP_DAEMON':
                     return
+                elif tasks:
+                    comm.send(tasks.pop(), src, tag=TASK)
                 elif src == 0 and req == 'ALL_DONE':
                     comm.send(out_of_task[0], src, tag=TASK)
                 elif out_of_task[0]:
                     comm.send('OUT_OF_TASK', src, tag=TASK)
-                elif tasks:
-                    task = tasks.pop()
-                    comm.send(task, src, tag=TASK)
                 else:
                     comm.send('BYPASS', src, tag=TASK)
     def prepare_to_stop():
-        interval[0] = 0
         out_of_task[0] = True
         if rank == 0:
             while True:
@@ -118,6 +115,7 @@ def work_stealing_partition(tasks, interval=.01):
                     done.append(comm.recv(source=i, tag=TASK))
                 if all(done):
                     break
+                time.sleep(interval)
             for i in range(pool.size):
                 comm.send((0,'STOP_DAEMON'), i, tag=INQUIRY)
         tasks_handler.join()

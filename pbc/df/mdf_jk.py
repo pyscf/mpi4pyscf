@@ -472,7 +472,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                     vjR[i] -= numpy.dot(pqkI, rhoI)
                     vjI[i] += numpy.dot(pqkR, rhoI)
                     vjI[i] += numpy.dot(pqkI, rhoR)
-        t2 = log.alltimer_debug2('        with_j', *t2)
+        #t2 = log.alltimer_debug2('        with_j', *t2)
 
         if with_k:
             coulG = numpy.sqrt(vkcoulG[p0:p1])
@@ -484,40 +484,80 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             pLqI = lib.transpose(pqkI.reshape(nao,nao,-1), axes=(0,2,1), out=bufI).reshape(-1,nao)
             iLkR = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkR)
             iLkI = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkI)
-            t2 = log.alltimer_debug2('        transpose', *t2)
             for i in range(nset):
                 if k_real:
                     lib.dot(pLqR, dmsR[i], 1, iLkR)
-                    t2 = log.alltimer_debug2('        dot 1', *t2)
                     lib.dot(pLqI, dmsR[i], 1, iLkI)
-                    t2 = log.alltimer_debug2('        dot 2', *t2)
                     lib.dot(iLkR.reshape(nao,-1), pLqR.reshape(nao,-1).T, 1, vkR[i], 1)
-                    t2 = log.alltimer_debug2('        dot 3', *t2)
                     lib.dot(iLkI.reshape(nao,-1), pLqI.reshape(nao,-1).T, 1, vkR[i], 1)
-                    t2 = log.alltimer_debug2('        dot 4', *t2)
                 else:
                     zdotNN(pLqR, pLqI, dmsR[i], dmsI[i], 1, iLkR, iLkI)
                     zdotNC(iLkR.reshape(nao,-1), iLkI.reshape(nao,-1),
                            pLqR.reshape(nao,-1).T, pLqI.reshape(nao,-1).T,
                            1, vkR[i], vkI[i])
+            #t2 = log.alltimer_debug2('        with_k', *t2)
         pqkR = pqkI = coulG = pLqR = pLqI = iLkR = iLkI = None
         #t2 = log.alltimer_debug2('%d:%d'%(p0,p1), *t2)
+    bufR = bufI = None
     t1 = log.alltimer_debug2('get_jk pass 1', *t1)
 
-    bufR = numpy.empty((mydf.blockdim*nao**2))
-    bufI = numpy.empty((mydf.blockdim*nao**2))
-    max_memory = max(2000, (mydf.max_memory - lib.current_memory()[0])*.8)
+    max_memory = max(2000, (mydf.max_memory - lib.current_memory()[0])) * .45
     if with_j:
         vjR = vjR.reshape(nset,nao,nao)
         vjI = vjI.reshape(nset,nao,nao)
-    #istep = 0
+
+    if with_k:
+        buf1R = numpy.empty((mydf.blockdim*nao**2))
+        buf2R = numpy.empty((mydf.blockdim*nao**2))
+        buf3R = numpy.empty((mydf.blockdim*nao**2))
+        if not k_real:
+            buf1I = numpy.empty((mydf.blockdim*nao**2))
+            buf2I = numpy.empty((mydf.blockdim*nao**2))
+            buf3I = numpy.empty((mydf.blockdim*nao**2))
+    def contract_k(pLqR, pLqI, pjqR, pjqI):
+        # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
+        nrow = pLqR.shape[1]
+        tmpR = numpy.ndarray((nao,nrow*nao), buffer=buf3R)
+        if k_real:
+            for i in range(nset):
+                tmpR = lib.ddot(dmsR[i], pjqR.reshape(nao,-1), 1, tmpR)
+                vk1R = lib.ddot(pLqR.reshape(-1,nao).T, tmpR.reshape(-1,nao))
+                vkR[i] += vk1R
+                if hermi:
+                    vkR[i] += vk1R.T
+                else:
+                    tmpR = lib.ddot(dmsR[i], pLqR.reshape(nao,-1), 1, tmpR)
+                    lib.ddot(pjqR.reshape(-1,nao).T, tmpR.reshape(-1,nao),
+                             1, vkR[i], 1)
+        else:
+            tmpI = numpy.ndarray((nao,nrow*nao), buffer=buf3I)
+            for i in range(nset):
+                tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pjqR.reshape(nao,-1),
+                                    pjqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                vk1R, vk1I = zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
+                                    tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
+                vkR[i] += vk1R
+                vkI[i] += vk1I
+                if hermi:
+                    vkR[i] += vk1R.T
+                    vkI[i] -= vk1I.T
+                else:
+                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pLqR.reshape(nao,-1),
+                                        pLqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                    zdotCN(pjqR.reshape(-1,nao).T, pjqI.reshape(-1,nao).T,
+                           tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                           1, vkR[i], vkI[i], 1)
+
+    pLqI = pjqI = None
+    thread_k = None
     for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False):
         LpqR = LpqR.reshape(-1,nao,nao)
         LpqI = LpqI.reshape(-1,nao,nao)
         j3cR = j3cR.reshape(-1,nao,nao)
         j3cI = j3cI.reshape(-1,nao,nao)
-        #log.alldebug2('step %d memory in use %d', istep, lib.current_memory()[0])
         t2 = log.alltimer_debug2('        load', *t2)
+        if thread_k is not None:
+            thread_k.join()
         if with_j:
             rhoR  = numpy.einsum('Lpq,xpq->xL', LpqR, dmsR)
             jauxR = numpy.einsum('Lpq,xpq->xL', j3cR, dmsR)
@@ -539,55 +579,25 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
                 vjI += numpy.einsum('xL,Lpq->xpq', rhoR, j3cI)
                 vjI += numpy.einsum('xL,Lpq->xpq', rhoI, j3cR)
         t2 = log.alltimer_debug2('        with_j', *t2)
-
         if with_k:
             nrow = LpqR.shape[0]
-            pLqR = numpy.ndarray((nao,nrow,nao), buffer=bufR)
-            pjqR = numpy.ndarray((nao,nrow,nao), buffer=LpqR)
-            tmpR = numpy.ndarray((nao,nrow*nao), buffer=j3cR)
+            pLqR = numpy.ndarray((nao,nrow,nao), buffer=buf1R)
+            pjqR = numpy.ndarray((nao,nrow,nao), buffer=buf2R)
             pLqR[:] = LpqR.transpose(1,0,2)
             pjqR[:] = j3cR.transpose(1,0,2)
-            # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
-            t2 = log.alltimer_debug2('        transpose', *t2)
-            if k_real:
-                for i in range(nset):
-                    tmpR = lib.ddot(dmsR[i], pjqR.reshape(nao,-1), 1, tmpR)
-                    t2 = log.alltimer_debug2('        dot 1', *t2)
-                    vk1R = lib.ddot(pLqR.reshape(-1,nao).T, tmpR.reshape(-1,nao))
-                    t2 = log.alltimer_debug2('        dot 2', *t2)
-                    vkR[i] += vk1R
-                    if hermi:
-                        vkR[i] += vk1R.T
-                    else:
-                        tmpR = lib.ddot(dmsR[i], pLqR.reshape(nao,-1), 1, tmpR)
-                        lib.ddot(pjqR.reshape(-1,nao).T, tmpR.reshape(-1,nao),
-                                 1, vkR[i], 1)
-            else:
-                pLqI = numpy.ndarray((nao,nrow,nao), buffer=bufI)
-                pjqI = numpy.ndarray((nao,nrow,nao), buffer=LpqI)
-                tmpI = numpy.ndarray((nao,nrow*nao), buffer=j3cI)
+            if not k_real:
+                pLqI = numpy.ndarray((nao,nrow,nao), buffer=buf1I)
+                pjqI = numpy.ndarray((nao,nrow,nao), buffer=buf2I)
                 pLqI[:] = LpqI.transpose(1,0,2)
                 pjqI[:] = j3cI.transpose(1,0,2)
-                for i in range(nset):
-                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pjqR.reshape(nao,-1),
-                                        pjqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                    vk1R, vk1I = zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
-                                        tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
-                    vkR[i] += vk1R
-                    vkI[i] += vk1I
-                    if hermi:
-                        vkR[i] += vk1R.T
-                        vkI[i] -= vk1I.T
-                    else:
-                        tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pLqR.reshape(nao,-1),
-                                            pLqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                        zdotCN(pjqR.reshape(-1,nao).T, pjqI.reshape(-1,nao).T,
-                               tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
-                               1, vkR[i], vkI[i], 1)
-        LpqR = LpqI = j3cR = j3cI = vk1R = vk1I = None
-        pLqR = pLqI = pjqR = pjqI = tmpR = tmpI = None
-        #log.alldebug2('step %d memory in use %d', istep, lib.current_memory()[0])
-        #istep += 1
+
+            thread_k = lib.background_thread(contract_k, pLqR, pLqI, pjqR, pjqI)
+            t2 = log.alltimer_debug2('        with_k', *t2)
+        LpqR = LpqI = j3cR = j3cI = None
+    if thread_k is not None:
+        thread_k.join()
+    thread_k = None
+
     if with_j:
         vjR = mpi.reduce(vjR)
         vjI = mpi.reduce(vjI)
