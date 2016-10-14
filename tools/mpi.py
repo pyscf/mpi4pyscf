@@ -42,7 +42,7 @@ def work_balanced_partition(tasks, costs=None):
             start_id = stop_id
         comm.bcast(loads)
     else:
-        loads = comm.bcast()
+        loads = comm.bcast(None)
     if rank < len(loads):
         start, stop = loads[rank]
         return tasks[start:stop]

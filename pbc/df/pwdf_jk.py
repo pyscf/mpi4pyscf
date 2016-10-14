@@ -313,7 +313,7 @@ def _format_dms(dm_kpts, kpts):
         comm.bcast((dms.shape, dms.dtype))
         comm.Bcast(dms)
     else:
-        shape, dtype = comm.bcast()
+        shape, dtype = comm.bcast(None)
         nao = shape[-1]
         dms = numpy.empty(shape, dtype=dtype)
         comm.Bcast(dms)

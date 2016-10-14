@@ -74,7 +74,7 @@ class MPIPool(object):
                 print("Worker {0} waiting for task.".format(self.rank))
 
             # Blocking receive to wait for instructions.
-            task = self.comm.bcast()
+            task = self.comm.bcast(None)
             if self.debug:
                 print("Worker {0} got task {1}.".format(self.rank, task))
 
