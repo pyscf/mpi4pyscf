@@ -554,16 +554,17 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         return segs
 
     def save(label, k, p0, p1, segs):
+        segs = mpi.alltoall(segs)
         loc0, loc1 = min(p0, naux-naux0), min(p1, naux-naux0)
         nL = loc1 - loc0
-        segs = mpi.alltoall(segs)
-        segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
-        segs = numpy.hstack(segs)
-        if j_only:
-            segs = lib.hermi_sum(segs.reshape(-1,nao,nao), axes=(0,2,1))
-        if aosym_s2[k]:
-            segs = lib.pack_tril(segs.reshape(-1,nao,nao))
-        feri['%s/%d'%(label,k)][loc0:loc1] = segs
+        if nL > 0:
+            segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
+            segs = numpy.hstack(segs)
+            if j_only:
+                segs = lib.hermi_sum(segs.reshape(-1,nao,nao), axes=(0,2,1))
+            if aosym_s2[k]:
+                segs = lib.pack_tril(segs.reshape(-1,nao,nao))
+            feri['%s/%d'%(label,k)][loc0:loc1] = segs
 
     mem_now = max(comm.allgather(lib.current_memory()[0]))
     max_memory = max(2000, min(8000, mydf.max_memory - mem_now))
