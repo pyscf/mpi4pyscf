@@ -85,15 +85,16 @@ def _get_nuc(reg_keys, kpts=None):
     t1 = log.timer_debug1('vnuc pass1: analytic int', *t1)
 
     kpt_allow = numpy.zeros(3)
-    coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
-    Gv = cell.get_Gv(mydf.gs)
+    Gv, Gvbase, kws = cell.get_Gv_weights(mydf.gs)
+    coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs, Gv=Gv)
+    coulG *= kws
     aoaux = ft_ao.ft_ao(nuccell, Gv)
     vGR = numpy.einsum('i,xi->x', charge, aoaux.real) * coulG
     vGI = numpy.einsum('i,xi->x', charge, aoaux.imag) * coulG
 
     max_memory = max(2000, mydf.max_memory-lib.current_memory()[0])
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts_lst, max_memory=max_memory):
+            in mydf.ft_loop(mydf.gs, kpt_allow, kpts_lst, max_memory=max_memory):
 # rho_ij(G) nuc(-G) / G^2
 # = [Re(rho_ij(G)) + Im(rho_ij(G))*1j] [Re(nuc(G)) - Im(nuc(G))*1j] / G^2
         if not gamma_point(kpts_lst[k]):
@@ -258,11 +259,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     nkptij = len(kptij_lst)
 
     gs = mydf.gs
-    gxyz = lib.cartesian_prod((numpy.append(range(gs[0]+1), range(-gs[0],0)),
-                               numpy.append(range(gs[1]+1), range(-gs[1],0)),
-                               numpy.append(range(gs[2]+1), range(-gs[2],0))))
-    invh = numpy.linalg.inv(cell._h)
-    Gv = 2*numpy.pi * numpy.dot(gxyz, invh)
+    Gv, Gvbase, kws = cell.get_Gv_weights(gs)
+    b = cell.reciprocal_vectors()
+    gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
     ngs = gxyz.shape[0]
 
     kptis = kptij_lst[:,0]
@@ -275,9 +274,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     kLRs = []
     kLIs = []
     for k, kpt in enumerate(uniq_kpts):
-        aoaux = ft_ao.ft_ao(fused_cell, Gv, None, invh, gxyz, gs, kpt).T
+        aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         aoaux = fuse(aoaux)
-        coulG = numpy.sqrt(tools.get_coulG(cell, kpt, gs=gs) / cell.vol)
+        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
         kLR = (aoaux.real * coulG).T
         kLI = (aoaux.imag * coulG).T
         if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
@@ -380,8 +379,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             log.alldebug2("aux_e2 %s job_id %d step %d", label, job_id, istep)
             sh0, sh1, nrow = auxrange
             c_shls_slice = (ctypes.c_int*6)(ish0, ish1, cell.nbas, cell.nbas*2,
-                                            cell.nbas*2+sh0,
-                                            cell.nbas*2+sh1)
+                                            cell.nbas*2+sh0, cell.nbas*2+sh1)
             if j_only:
                 for l, L1 in enumerate(Ls):
                     env[ptr_coordL] = xyz + L1
@@ -436,7 +434,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         i0 = ao_loc[sh0]
         i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
-            key = '-chunks/%d/%d' % (job_id, k)
+            key = '-chunks/%d/%d' % (job_id, idx)
             Lpq = numpy.asarray(feri['Lpq'+key])
             j3c = numpy.asarray(feri['j3c'+key])
             if is_zero(kpt):
@@ -452,7 +450,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
 
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
-        Gblksize = min(Gblksize, ngs)
+        Gblksize = min(Gblksize, ngs, 16384)
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         # buf for ft_aopair
@@ -462,8 +460,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         shls_slice = (sh0, sh1, 0, cell.nbas)
         ni = ncol // nao
         for p0, p1 in lib.prange(0, ngs, Gblksize):
-            ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, 's1', invh,
-                                  gxyz[p0:p1], gs, kpt, adapted_kptjs, out=buf)
+            ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, 's1', b,
+                                  gxyz[p0:p1], Gvbase, kpt, adapted_kptjs, out=buf)
             nG = p1 - p0
             for k, ji in enumerate(adapted_ji_idx):
                 aoao = numpy.ndarray((nG,ni,nao), dtype=numpy.complex128,

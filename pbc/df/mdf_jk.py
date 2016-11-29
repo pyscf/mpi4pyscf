@@ -90,13 +90,13 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     dmsR = dms.real.reshape(nset,nkpts,nao**2)
     dmsI = dms.imag.reshape(nset,nkpts,nao**2)
     kpt_allow = numpy.zeros(3)
-    coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
+    coulG = mydf.weighted_coulG(kpt_allow, False, mydf.gs)
     ngs = len(coulG)
     vR = numpy.zeros((nset,ngs))
     vI = numpy.zeros((nset,ngs))
     max_memory = max(2000, (mydf.max_memory - lib.current_memory()[0]) * .9)
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts, max_memory=max_memory):
+            in mydf.ft_loop(mydf.gs, kpt_allow, kpts, max_memory=max_memory):
         # contract dm to rho_rs(-G+k_rs)  (Note no .T on dm)
         # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
         #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
@@ -123,7 +123,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
     vjR = numpy.zeros((nset,nband,nao*nao))
     vjI = numpy.zeros((nset,nband,nao*nao))
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts_band, max_memory=max_memory):
+            in mydf.ft_loop(mydf.gs, kpt_allow, kpts_band, max_memory=max_memory):
         for i in range(nset):
             vjR[i,k] += numpy.dot(pqkR, vR[i,p0:p1])
             vjR[i,k] -= numpy.dot(pqkI, vI[i,p0:p1])
@@ -256,11 +256,11 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         bufR = numpy.empty((blksize*nao**2))
         bufI = numpy.empty((blksize*nao**2))
         mydf.exxdiv = exxdiv
-        vkcoulG = tools.get_coulG(cell, kpt, True, mydf, mydf.gs) / cell.vol
+        vkcoulG = mydf.weighted_coulG(kpt, True, mydf.gs)
         kptjs = kpts[kptj_idx]
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
         for k, pqkR, pqkI, p0, p1 \
-                in mydf.ft_loop(cell, mydf.gs, kpt, kptjs, max_memory=max_memory):
+                in mydf.ft_loop(mydf.gs, kpt, kptjs, max_memory=max_memory):
             ki = kpti_idx[k]
             kj = kptj_idx[k]
             coulG = numpy.sqrt(vkcoulG[p0:p1])
@@ -429,12 +429,12 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     kpt_allow = numpy.zeros(3)
 
     if with_j:
-        vjcoulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
+        vjcoulG = mydf.weighted_coulG(kpt, False, mydf.gs)
         vjR = numpy.zeros((nset,nao**2))
         vjI = numpy.zeros((nset,nao**2))
     if with_k:
         mydf.exxdiv = exxdiv
-        vkcoulG = tools.get_coulG(cell, kpt_allow, True, mydf, mydf.gs) / cell.vol
+        vkcoulG = mydf.weighted_coulG(kpt, True, mydf.gs)
         vkR = numpy.zeros((nset,nao,nao))
         vkI = numpy.zeros((nset,nao,nao))
     dmsR = dms.real.reshape(nset,nao,nao)
@@ -449,8 +449,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     blksize = max(int(max_memory*.25e6/16/nao**2), 16)
     bufR = numpy.empty(blksize*nao**2)
     bufI = numpy.empty(blksize*nao**2)
-    for pqkR, pqkI, p0, p1 \
-            in mydf.pw_loop(cell, mydf.gs, kptii, max_memory=max_memory):
+    for pqkR, pqkI, p0, p1 in mydf.pw_loop(mydf.gs, kptii, max_memory=max_memory):
         t2 = log.alltimer_debug2('%d:%d ft_aopair'%(p0,p1), *t2)
         if with_j:
             for i in range(nset):
@@ -641,7 +640,7 @@ if __name__ == '__main__':
     L = 5.
     n = 5
     cell = pgto.Cell()
-    cell.h = numpy.diag([L,L,L])
+    cell.a = numpy.diag([L,L,L])
     cell.gs = numpy.array([n,n,n])
 
     cell.atom = '''C    3.    2.       3.

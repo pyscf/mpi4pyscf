@@ -53,11 +53,11 @@ def _get_eri(reg_keys, kpts=None, compact=True):
             LpqR = LpqI = j3cR = j3cI = None
         eriR = lib.transpose_sum(eriR, inplace=True)
 
-        coulG = tools.get_coulG(cell, kptj-kpti, gs=mydf.gs) / cell.vol
+        coulG = mydf.weighted_coulG(kptj-kpti, False, mydf.gs)
         max_memory = (mydf.max_memory - lib.current_memory()[0]) * .8
         trilidx = numpy.tril_indices(nao)
         for pqkR, pqkI, p0, p1 \
-                in mydf.pw_loop(cell, mydf.gs, kptijkl[:2], max_memory=max_memory):
+                in mydf.pw_loop(mydf.gs, kptijkl[:2], max_memory=max_memory):
             pqkR = numpy.asarray(pqkR.reshape(nao,nao,-1)[trilidx], order='C')
             pqkI = numpy.asarray(pqkI.reshape(nao,nao,-1)[trilidx], order='C')
             vG = numpy.sqrt(coulG[p0:p1])
@@ -88,9 +88,9 @@ def _get_eri(reg_keys, kpts=None, compact=True):
             zdotNC(LpqR.T, LpqI.T, j3cR, j3cI, 1, eriR, eriI, 1)
             LpqR = LpqI = j3cR = j3cI = None
 
-        coulG = tools.get_coulG(cell, kptj-kpti, gs=mydf.gs) / cell.vol
+        coulG = mydf.weighted_coulG(kptj-kpti, False, mydf.gs)
         for pqkR, pqkI, p0, p1 \
-                in mydf.pw_loop(cell, mydf.gs, kptijkl[:2], max_memory=max_memory):
+                in mydf.pw_loop(mydf.gs, kptijkl[:2], max_memory=max_memory):
             vG = numpy.sqrt(coulG[p0:p1])
             pqkR *= vG
             pqkI *= vG
@@ -125,12 +125,12 @@ def _get_eri(reg_keys, kpts=None, compact=True):
             zdotNN(LpqR.T, LpqI.T, jrsR, jrsI, 1, eriR, eriI, 1)
             LpqR = LpqI = jpqR = jpqI = LrsR = LrsI = jrsR = jrsI = None
 
-        coulG = tools.get_coulG(cell, kptj-kpti, gs=mydf.gs) / cell.vol
+        coulG = mydf.weighted_coulG(kptj-kpti, False, mydf.gs)
         max_memory = (mydf.max_memory - lib.current_memory()[0]) * .4
 
         for (pqkR, pqkI, p0, p1), (rskR, rskI, q0, q1) in \
-                lib.izip(mydf.pw_loop(cell, mydf.gs, kptijkl[:2], max_memory=max_memory),
-                         mydf.pw_loop(cell, mydf.gs,-kptijkl[2:], max_memory=max_memory)):
+                lib.izip(mydf.pw_loop(mydf.gs, kptijkl[:2], max_memory=max_memory),
+                         mydf.pw_loop(mydf.gs,-kptijkl[2:], max_memory=max_memory)):
             pqkR *= coulG[p0:p1]
             pqkI *= coulG[p0:p1]
 # rho'_rs(G-k_rs) = conj(rho_rs(-G+k_rs))
@@ -196,7 +196,7 @@ if __name__ == '__main__':
     L = 5.
     n = 5
     cell = pgto.Cell()
-    cell.h = numpy.diag([L,L,L])
+    cell.a = numpy.diag([L,L,L])
     cell.gs = numpy.array([n,n,n])
 
     cell.atom = '''He    3.    2.       3.

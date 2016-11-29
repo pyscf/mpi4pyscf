@@ -39,7 +39,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
     nset, nkpts, nao = dms.shape[:3]
 
     kpt_allow = numpy.zeros(3)
-    coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
+    coulG = mydf.weighted_coulG(kpt_allow, False, mydf.gs)
 
     dmsR = dms.real.reshape(nset,nkpts,nao**2)
     dmsI = dms.imag.reshape(nset,nkpts,nao**2)
@@ -48,7 +48,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
     vI = numpy.zeros((nset,ngs))
     max_memory = (mydf.max_memory - lib.current_memory()[0]) * .8
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts, max_memory):
+            in mydf.ft_loop(mydf.gs, kpt_allow, kpts, max_memory=max_memory):
         for i in range(nset):
             rhoR = numpy.dot(dmsR[i,k], pqkR)
             rhoR-= numpy.dot(dmsI[i,k], pqkI)
@@ -69,22 +69,24 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
         kpts_band = kpts
     else:
         kpts_band = numpy.reshape(kpt_band, (-1,3))
+    gamma_point = abs(kpts_band).sum() < 1e-9
     nband = len(kpts_band)
 
     vjR = numpy.zeros((nset,nband,nao*nao))
     vjI = numpy.zeros((nset,nband,nao*nao))
     for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(cell, mydf.gs, kpt_allow, kpts_band, max_memory):
+            in mydf.ft_loop(mydf.gs, kpt_allow, kpts_band,
+                            max_memory=max_memory):
         for i in range(nset):
             vjR[i,k] += numpy.dot(pqkR, vR[i,p0:p1])
             vjR[i,k] += numpy.dot(pqkI, vI[i,p0:p1])
-        if abs(kpts_band[k]).sum() > 1e-9:  # if not gamma point
+        if not gamma_point:
             for i in range(nset):
                 vjI[i,k] += numpy.dot(pqkI, vR[i,p0:p1])
                 vjI[i,k] -= numpy.dot(pqkR, vI[i,p0:p1])
     pqkR = pqkI = coulG = None
 
-    if abs(kpts_band).sum() < 1e-9:  # gamma point
+    if gamma_point:
         vj_kpts = vjR
     else:
         vj_kpts = vjR + vjI*1j
@@ -145,10 +147,11 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             kk_todo[kptj_idx,kpti_idx] = False
 
         mydf.exxdiv = exxdiv
-        vkcoulG = tools.get_coulG(cell, kpt, True, mydf, mydf.gs) / cell.vol
+        vkcoulG = mydf.weighted_coulG(kpt, True, mydf.gs)
         # <r|-G+k_rs|s> = conj(<s|G-k_rs|r>) = conj(<s|G+k_sr|r>)
         for k, pqkR, pqkI, p0, p1 \
-                in mydf.ft_loop(cell, mydf.gs, kpt, kpts[kptj_idx], max_memory=max_memory):
+                in mydf.ft_loop(mydf.gs, kpt, kpts[kptj_idx],
+                                max_memory=max_memory):
             ki = kpti_idx[k]
             kj = kptj_idx[k]
             coulG = numpy.sqrt(vkcoulG[p0:p1])
@@ -245,11 +248,11 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     gamma_point = abs(kpt).sum() < 1e-9
 
     if with_j:
-        vjcoulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs) / cell.vol
+        vjcoulG = mydf.weighted_coulG(kpt_allow, False, mydf.gs)
     if with_k:
         vk = numpy.zeros((nset,nao,nao), dtype=numpy.complex128)
         mydf.exxdiv = exxdiv
-        vkcoulG = tools.get_coulG(cell, kpt_allow, True, mydf, mydf.gs) / cell.vol
+        vkcoulG = mydf.weighted_coulG(kpt_allow, True, mydf.gs)
 
     dmsR = dms.real.reshape(nset,nao**2)
     dmsI = dms.imag.reshape(nset,nao**2)
@@ -257,7 +260,7 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
     vjI = numpy.zeros((nset,nao**2))
     max_memory = (mydf.max_memory - lib.current_memory()[0]) * .8
     for pqkR, pqkI, p0, p1 \
-            in mydf.pw_loop(cell, mydf.gs, kptii, max_memory):
+            in mydf.pw_loop(mydf.gs, kptii, max_memory=max_memory):
         if with_j:
             for i in range(nset):
                 rhoR = numpy.dot(dmsR[i], pqkR)
@@ -328,7 +331,7 @@ if __name__ == '__main__':
     L = 5.
     n = 5
     cell = pgto.Cell()
-    cell.h = numpy.diag([L,L,L])
+    cell.a = numpy.diag([L,L,L])
     cell.gs = numpy.array([n,n,n])
 
     cell.atom = '''He    3.    2.       3.

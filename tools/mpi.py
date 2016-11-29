@@ -156,7 +156,7 @@ def work_stealing_partition(tasks, interval=.02):
 
 def bcast(buf, root=0):
     buf = numpy.asarray(buf, order='C')
-    shape, dtype = comm.bcast((buf.shape, buf.dtype))
+    shape, dtype = comm.bcast((buf.shape, buf.dtype.char))
     if rank != root:
         buf = numpy.empty(shape, dtype=dtype)
     comm.Bcast(buf, root)
