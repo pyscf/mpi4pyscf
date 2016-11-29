@@ -436,7 +436,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         i0 = ao_loc[sh0]
         i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
-            key = '-chunks/%d/%d' % (job_id, k)
+            key = '-chunks/%d/%d' % (job_id, idx)
             Lpq = numpy.asarray(feri['Lpq'+key])
             j3c = numpy.asarray(feri['j3c'+key])
             if is_zero(kpt):
