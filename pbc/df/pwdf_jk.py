@@ -20,16 +20,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def get_j_kpts(mydf, dm_kpts, hermi=1,
-               kpts=numpy.zeros((1,3)), kpt_band=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
-    return mpi.pool.apply(_get_j_kpts_wrap, master_args, worker_args)
-def _get_j_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf_jk
-    return pwdf_jk._get_j_kpts(*args)
-def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
-    mydf = _load_df(reg_keys)
+def _get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band):
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
@@ -101,19 +93,12 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi, kpts, kpt_band):
                 return vj_kpts[:,0]
         else:
             return vj_kpts.reshape(dm_kpts.shape)
+get_j_kpts = mpi.parallel_call(_get_j_kpts)
 
 
-def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
-               exxdiv=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band, exxdiv)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band, exxdiv)
-    return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
-def _get_k_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf_jk
-    return pwdf_jk._get_k_kpts(*args)
-def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None, exxdiv=None):
-    mydf = _load_df(reg_keys)
+def _get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
+                exxdiv=None):
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
@@ -205,6 +190,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                 return vk_kpts[:,0]
         else:
             return vk_kpts.reshape(dm_kpts.shape)
+get_k_kpts = mpi.parallel_call(_get_k_kpts)
 
 
 ##################################################
@@ -213,27 +199,20 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
 #
 ##################################################
 
+@mpi.parallel_call
 def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
-           kpt_band=None, with_j=True, with_k=True, exxdiv=None):
-    master_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
-    worker_args = (mydf._reg_keys, None, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
-    return mpi.pool.apply(_get_jk_wrap, master_args, worker_args)
-def _get_jk_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf_jk
-    return pwdf_jk._get_jk(*args)
-def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             kpt_band=None, with_j=True, with_k=True, exxdiv=None):
     '''JK for given k-point'''
     vj = vk = None
     if kpt_band is not None and abs(kpt-kpt_band).sum() > 1e-9:
         kpt = numpy.reshape(kpt, (1,3))
         if with_k:
-            vk = _get_k_kpts(reg_keys, [dm], hermi, kpt, kpt_band, exxdiv)
+            vk = _get_k_kpts(mydf, [dm], hermi, kpt, kpt_band, exxdiv)
         if with_j:
-            vj = _get_j_kpts(reg_keys, [dm], hermi, kpt, kpt_band)
+            vj = _get_j_kpts(mydf, [dm], hermi, kpt, kpt_band)
         return vj, vk
 
-    mydf = _load_df(reg_keys)
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
@@ -303,23 +282,13 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
             vk = vk.real
     return vj, vk
 
-def _load_df(reg_keys):
-    mydf = mpi._registry[reg_keys[rank]]
-    mydf.kpts, mydf.gs = comm.bcast((mydf.kpts, mydf.gs))
-    return mydf
+def _sync_mydf(mydf):
+    return mydf.unpack_(comm.bcast(mydf.pack()))
 
 def _format_dms(dm_kpts, kpts):
-    if rank == 0:
-        nkpts = len(kpts)
-        nao = dm_kpts.shape[-1]
-        dms = dm_kpts.reshape(-1,nkpts,nao,nao)
-        comm.bcast((dms.shape, dms.dtype))
-        comm.Bcast(dms)
-    else:
-        shape, dtype = comm.bcast(None)
-        nao = shape[-1]
-        dms = numpy.empty(shape, dtype=dtype)
-        comm.Bcast(dms)
+    nkpts = len(kpts)
+    nao = dm_kpts.shape[-1]
+    dms = dm_kpts.reshape(-1,nkpts,nao,nao)
     return dms
 
 

@@ -18,7 +18,7 @@ from pyscf.pbc.df.mdf_jk import zdotNN, zdotNC, zdotCN
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import pwdf_jk
+from mpi4pyscf.pbc.df.pwdf_jk import _format_dms
 
 comm = mpi.comm
 rank = mpi.rank
@@ -59,24 +59,17 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
     return mf
 
 
-def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
+def _get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
+                kpt_band=None):
     if mydf._cderi is None:
-        mydf.build()
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
-    return mpi.pool.apply(_get_j_kpts_wrap, master_args, worker_args)
-def _get_j_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import mdf_jk
-    return mdf_jk._get_j_kpts(*args)
-def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None):
-    mydf = _load_df(reg_keys)
+        mydf._build()
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
 
     dm_kpts = lib.asarray(dm_kpts, order='C')
-    dms = pwdf_jk._format_dms(dm_kpts, kpts)
+    dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
     naux = mydf.auxcell.nao_nr()
 
@@ -198,28 +191,20 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
                 return vj_kpts[:,0]
         else:
             return vj_kpts.reshape(dm_kpts.shape)
+get_j_kpts = mpi.parallel_call(_get_j_kpts)
 
 
-def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
-               exxdiv=None):
+def _get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
+                kpt_band=None, exxdiv=None):
     if mydf._cderi is None:
-        mydf.build()
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band, exxdiv)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band, exxdiv)
-    return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
-def _get_k_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import mdf_jk
-    return mdf_jk._get_k_kpts(*args)
-def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None, exxdiv=None):
-    from mpi4pyscf.pbc.df import mdf
-    mydf = _load_df(reg_keys)
+        mydf._build()
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
 
     dm_kpts = lib.asarray(dm_kpts, order='C')
-    dms = pwdf_jk._format_dms(dm_kpts, kpts)
+    dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
     naux = mydf.auxcell.nao_nr()
     nao_pair = nao * (nao+1) // 2
@@ -382,6 +367,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
                 return vk_kpts[:,0]
         else:
             return vk_kpts.reshape(dm_kpts.shape)
+get_k_kpts = mpi.parallel_call(_get_k_kpts)
 
 
 ##################################################
@@ -390,35 +376,29 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
 #
 ##################################################
 
+@mpi.parallel_call
 def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
            kpt_band=None, with_j=True, with_k=True, exxdiv=None):
-    if mydf._cderi is None:
-        mydf.build()
-    master_args = (mydf._reg_keys, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
-    worker_args = (mydf._reg_keys, None, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
-    return mpi.pool.apply(_get_jk_wrap, master_args, worker_args)
-def _get_jk_wrap(args):
-    from mpi4pyscf.pbc.df import mdf_jk
-    return mdf_jk._get_jk(*args)
-def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
-            kpt_band=None, with_j=True, with_k=True, exxdiv=None):
     '''JK for given k-point'''
+    if mydf._cderi is None:
+        mydf._build()
+
     vj = vk = None
     if kpt_band is not None and abs(kpt-kpt_band).sum() > 1e-9:
         kpt = numpy.reshape(kpt, (1,3))
         if with_k:
-            vk = _get_k_kpts(reg_keys, [dm], hermi, kpt, kpt_band, exxdiv)
+            vk = _get_k_kpts(mydf, [dm], hermi, kpt, kpt_band, exxdiv)
         if with_j:
-            vj = _get_j_kpts(reg_keys, [dm], hermi, kpt, kpt_band)
+            vj = _get_j_kpts(mydf, [dm], hermi, kpt, kpt_band)
         return vj, vk
 
-    mydf = _load_df(reg_keys)
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = (time.clock(), time.time())
 
     dm = numpy.asarray(dm, order='C')
-    dms = pwdf_jk._format_dms(dm, [kpt])
+    dms = _format_dms(dm, [kpt])
     nset, _, nao = dms.shape[:3]
     dms = dms.reshape(nset,nao,nao)
     j_real = gamma_point(kpt)
@@ -621,15 +601,12 @@ def _get_jk(reg_keys, dm, hermi=1, kpt=numpy.zeros(3),
         t1 = log.timer_debug1('sr jk', *t1)
         return vj, vk
 
-
-def _load_df(reg_keys):
-    mydf = mpi._registry[reg_keys[rank]]
-    mydf.kpts, mydf.gs = comm.bcast((mydf.kpts, mydf.gs))
-    return mydf
-
 def is_zero(kpt):
     return kpt is None or abs(kpt).sum() < 1e-9
 gamma_point = is_zero
+
+def _sync_mydf(mydf):
+    return mydf.unpack_(comm.bcast(mydf.pack()))
 
 
 if __name__ == '__main__':

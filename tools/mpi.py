@@ -271,6 +271,60 @@ def _assert(condition):
         sys.stderr.write(''.join(traceback.format_stack()[:-1]))
         comm.Abort()
 
+def del_registry(reg_keys):
+    if reg_keys:
+        def f(reg_keys):
+            from mpi4pyscf.tools import mpi
+            mpi._registry.pop(reg_keys[mpi.rank])
+        pool.apply(f, reg_keys, reg_keys)
+    return []
+
+def _init_register(f_arg):
+    from mpi4pyscf.tools import mpi
+    module, name, args, kwargs = f_arg
+    if module is None:
+        cls = name
+    else:
+        from pyscf.gto import mole
+        from pyscf.pbc.gto import cell
+# Guess whether the args[0] is serialized mole or cell
+        if isinstance(args[0], str) and args[0][0] == '{':
+            if '_pseudo' in args[0]:
+                c = cell.loads(args[0])
+                args = (c,) + args[1:]
+            elif '_bas' in args[0]:
+                m = mole.loads(args[0])
+                args = (m,) + args[1:]
+        cls = getattr(importlib.import_module(module), name)
+    obj = cls(*args, **kwargs)
+
+    # Keep track of the object in a global registry.  On slave nodes, the
+    # object can be accessed from global registry.
+    key = id(obj)
+    mpi._registry[key] = obj
+    keys = mpi.comm.gather(key)
+    if mpi.rank == 0:
+        obj._reg_keys = keys
+        return obj
+
+if rank == 0:
+    def register_class(cls):
+        from pyscf.gto import mole
+        from pyscf.pbc.gto import cell
+        def with_mpi(*args, **kwargs):
+            if isinstance(args[0], mole.Mole):
+                obj = pool.apply(_init_register, (None, cls, args, kwargs),
+                                 (cls.__module__, cls.__name__,
+                                  (args[0].dumps(),)+args[1:], kwargs))
+            else:
+                obj = pool.apply(_init_register, (None, cls, args, kwargs),
+                                 (cls.__module__, cls.__name__, args, kwargs))
+            return obj
+        return with_mpi
+else:
+    def register_class(cls):
+        return cls
+
 def register_for(obj):
     global _registry
     key = id(obj)
@@ -282,10 +336,22 @@ def register_for(obj):
         obj._reg_keys = keys
     return obj
 
-def del_registry(reg_keys):
-    if reg_keys:
-        def f(reg_keys):
-            from mpi4pyscf.tools import mpi
-            mpi._registry.pop(reg_keys[mpi.rank])
-        pool.apply(f, reg_keys, reg_keys)
-    return []
+def _decode_call(f_arg):
+    module, name, reg_keys, args, kwargs = f_arg
+    if module is None:
+        fn = name
+        dev = reg_keys
+    else:
+        from mpi4pyscf.tools import mpi
+        dev = mpi._registry[reg_keys[mpi.rank]]
+        fn = getattr(importlib.import_module(module), name)
+    return fn(dev, *args, **kwargs)
+if rank == 0:
+    def parallel_call(f):
+        def with_mpi(dev, *args, **kwargs):
+            return pool.apply(_decode_call, (None, f, dev, args, kwargs),
+                              (f.__module__, f.__name__, dev._reg_keys, args, kwargs))
+        return with_mpi
+else:
+    def parallel_call(f):
+        return f

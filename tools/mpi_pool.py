@@ -11,6 +11,7 @@ __all__ = ["MPIPool", "MPIPoolException"]
 import os
 import sys
 import imp
+import importlib
 import types
 import marshal
 #import traceback

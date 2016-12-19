@@ -13,22 +13,16 @@ from pyscf.pbc.df.mdf_jk import zdotNN, zdotCN, zdotNC
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df.mdf_jk import _load_df
+from mpi4pyscf.pbc.df.mdf_jk import _sync_mydf
 
 comm = mpi.comm
 rank = mpi.rank
 
 
-def get_eri(mydf, kpts=None, compact=True):
+def _get_eri(mydf, kpts=None, compact=True):
     if mydf._cderi is None:
-        mydf.build()
-    master_args = worker_args = (mydf._reg_keys, kpts, compact)
-    return mpi.pool.apply(_get_eri_wrap, master_args, worker_args)
-def _get_eri_wrap(args):
-    from mpi4pyscf.pbc.df import mdf_ao2mo
-    return mdf_ao2mo._get_eri(*args)
-def _get_eri(reg_keys, kpts=None, compact=True):
-    mydf = _load_df(reg_keys)
+        mydf._build()
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     if kpts is None:
         kptijkl = numpy.zeros((4,3))
@@ -143,18 +137,12 @@ def _get_eri(reg_keys, kpts=None, compact=True):
         eriI = mpi.reduce(eriI)
         if rank == 0:
             return eriR + eriI*1j
+get_eri = mpi.parallel_call(_get_eri)
 
 
+@mpi.parallel_call
 def general(mydf, mo_coeffs, kpts=None, compact=True):
-    if mydf._cderi is None:
-        mydf.build()
-    master_args = worker_args = (mydf._reg_keys, mo_coeffs, kpts, compact)
-    return mpi.pool.apply(_general_wrap, master_args, worker_args)
-def _general_wrap(args):
-    from mpi4pyscf.pbc.df import mdf_ao2mo
-    return mdf_ao2mo._general(*args)
-def _general(reg_keys, mo_coeffs, kpts=None, compact=True):
-    eri = _get_eri(reg_keys, kpts)
+    eri = _get_eri(mydf, kpts)
     if rank != 0:
         return
 
