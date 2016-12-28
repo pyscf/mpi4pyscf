@@ -19,9 +19,10 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def _get_eri(mydf, kpts=None, compact=True):
+@mpi.parallel_call
+def get_eri(mydf, kpts=None, compact=True):
     if mydf._cderi is None:
-        mydf._build()
+        mydf.build()
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     if kpts is None:
@@ -137,12 +138,11 @@ def _get_eri(mydf, kpts=None, compact=True):
         eriI = mpi.reduce(eriI)
         if rank == 0:
             return eriR + eriI*1j
-get_eri = mpi.parallel_call(_get_eri)
 
 
 @mpi.parallel_call
 def general(mydf, mo_coeffs, kpts=None, compact=True):
-    eri = _get_eri(mydf, kpts)
+    eri = get_eri(mydf, kpts)
     if rank != 0:
         return
 

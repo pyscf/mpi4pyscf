@@ -115,7 +115,8 @@ def get_nuc(mydf, kpts=None):
 get_pp_loc_part1 = get_nuc
 
 
-def _build(mydf, j_only=False, with_j3c=True):
+@mpi.parallel_call
+def build(mydf, j_only=False, with_j3c=True):
 # Unlike DF and PWDF class, here MDF objects are synced once
     if mpi.pool.size == 1:
         return df.DF.build(mydf, j_only, with_j3c)
@@ -152,13 +153,11 @@ def _build(mydf, j_only=False, with_j3c=True):
         _make_j3c(mydf, cell, mydf.auxcell, kptij_lst)
         t1 = log.timer_debug1('j3c', *t1)
     return mydf
-build = mpi.parallel_call(_build)
 
 
 class _DF(df.DF, pwdf._PWDF):
 
     build = build
-    _build = _build
     get_nuc = get_nuc
 
     def pack(self):
@@ -167,7 +166,6 @@ class _DF(df.DF, pwdf._PWDF):
                 'kpts'      : self.kpts,
                 'gs'        : self.gs,
                 'eta'       : self.eta,
-                'exxdiv'    : self.exxdiv,
                 'blockdim'  : self.blockdim,
                 'auxbasis'  : self.auxbasis}
     def unpack_(self, dfdic):
@@ -245,7 +243,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
         else:
             for p0, p1 in mydf.mpi_prange(0, ngs):
-                j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR, kLI)
+                j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
                 j2cR = mpi.allreduce(j2cR)
                 j2cI = mpi.allreduce(j2cI)
                 j2c[k][naux:] -= j2cR + j2cI * 1j
@@ -411,7 +409,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                     lib.dot(kLR[p0:p1].T, pqkI.T, -ccsum_fac, j3cI[k][naux:], 1)
                     lib.dot(kLI[p0:p1].T, pqkR.T,  ccsum_fac, j3cI[k][naux:], 1)
 
-        for k, ji in enumerate(adapted_ji_idx):
+        for k, idx in enumerate(adapted_ji_idx):
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
                 v = fuse(j3cR[k])
             else:

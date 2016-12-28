@@ -162,8 +162,7 @@ class _FFTDF(fft.FFTDF):
         return {'verbose'   : self.verbose,
                 'max_memory': self.max_memory,
                 'kpts'      : self.kpts,
-                'gs'        : self.gs,
-                'exxdiv'    : self.exxdiv}
+                'gs'        : self.gs}
     def unpack_(self, dfdic):
         self.__dict__.update(dfdic)
         return self

@@ -9,97 +9,27 @@ from pyscf import lib
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
 from pyscf.pbc import tools
+from pyscf.pbc.df import df_ao2mo
 from pyscf.pbc.df.df_jk import zdotNN, zdotCN, zdotNC
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df.df_jk import _sync_mydf
 
 comm = mpi.comm
 rank = mpi.rank
 
 
-def _get_eri(mydf, kpts=None, compact=True):
-    if mydf._cderi is None:
-        mydf._build()
-    mydf = _sync_mydf(mydf)
-    cell = mydf.cell
-    if kpts is None:
-        kptijkl = numpy.zeros((4,3))
-    elif numpy.shape(kpts) == (3,):
-        kptijkl = numpy.vstack([kpts]*4)
-    else:
-        kptijkl = numpy.reshape(kpts, (4,3))
-
-    kpti, kptj, kptk, kptl = kptijkl
-    auxcell = mydf.auxcell
-    nao = cell.nao_nr()
-    naux = auxcell.nao_nr()
-    nao_pair = nao * (nao+1) // 2
-    max_memory = max(2000, (mydf.max_memory - lib.current_memory()[0]) * .8)
-
-####################
-# gamma point, the integral is real and with s4 symmetry
-    if abs(kptijkl).sum() < 1e-9:
-        eriR = numpy.zeros((nao_pair,nao_pair))
-        for LpqR, LpqI in mydf.sr_loop(kptijkl[:2], max_memory, True):
-            lib.ddot(LpqR.T, LpqR, 1, eriR, 1)
-            LpqR = LpqI = None
-        if not compact:
-            eriR = ao2mo.restore(1, eriR, nao).reshape(nao**2,-1)
-        eriR = mpi.reduce(eriR)
-        if rank == 0:
-            return eriR
-
-####################
-# (kpt) i == j == k == l != 0
-#
-# (kpt) i == l && j == k && i != j && j != k  =>
-# both vbar and ovlp are zero. It corresponds to the exchange integral.
-#
-# complex integrals, N^4 elements
-    elif (abs(kpti-kptl).sum() < 1e-9) and (abs(kptj-kptk).sum() < 1e-9):
-        eriR = numpy.zeros((nao*nao,nao*nao))
-        eriI = numpy.zeros((nao*nao,nao*nao))
-        for LpqR, LpqI in mydf.sr_loop(kptijkl[:2], max_memory, False):
-            zdotNC(LpqR.T, LpqI.T, LpqR, LpqI, 1, eriR, eriI, 1)
-            LpqR = LpqI = None
-# transpose(0,1,3,2) because
-# j == k && i == l  =>
-# (L|ij).transpose(0,2,1).conj() = (L^*|ji) = (L^*|kl)  =>  (M|kl)
-# rho_rs(-G+k_rs) = conj(transpose(rho_sr(G+k_sr), (0,2,1)))
-        eriR = mpi.reduce(eriR)
-        eriI = mpi.reduce(eriI)
-        if rank == 0:
-            return (eriR.reshape((nao,)*4).transpose(0,1,3,2) +
-                    eriI.reshape((nao,)*4).transpose(0,1,3,2)*1j).reshape(nao**2,-1)
-
-####################
-# aosym = s1, complex integrals
-#
-# kpti == kptj  =>  kptl == kptk
-# If kpti == kptj, (kptl-kptk)*a has to be multiples of 2pi because of the wave
-# vector symmetry.  k is a fraction of reciprocal basis, 0 < k/b < 1, by definition.
-# So  kptl/b - kptk/b  must be -1 < k/b < 1.
-#
-    else:
-        eriR = numpy.zeros((nao*nao,nao*nao))
-        eriI = numpy.zeros((nao*nao,nao*nao))
-        for (LpqR, LpqI), (LrsR, LrsI) in \
-                lib.izip(mydf.sr_loop(kptijkl[:2], max_memory, False),
-                         mydf.sr_loop(kptijkl[2:], max_memory, False)):
-            zdotNN(LpqR.T, LpqI.T, LrsR, LrsI, 1, eriR, eriI, 1)
-            LpqR = LpqI = LrsR = LrsI = None
-        eriR = mpi.reduce(eriR)
-        eriI = mpi.reduce(eriI)
-        if rank == 0:
-            return eriR + eriI*1j
-get_eri = mpi.parallel_call(_get_eri)
+@mpi.parallel_call
+def get_eri(mydf, kpts=None, compact=True):
+    eri = df_ao2mo.get_eri(mydf, kpts, compact)
+    eri = mpi.reduce(eri)
+    return eri
 
 
 @mpi.parallel_call
 def general(mydf, mo_coeffs, kpts=None, compact=True):
-    eri = _get_eri(mydf, kpts)
+    eri = df_ao2mo.get_eri(mydf, kpts, compact)
+    eri = mpi.reduce(eri)
     if rank != 0:
         return
 

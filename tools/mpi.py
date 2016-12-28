@@ -312,7 +312,11 @@ if rank == 0:
         from pyscf.gto import mole
         from pyscf.pbc.gto import cell
         def with_mpi(*args, **kwargs):
-            if isinstance(args[0], mole.Mole):
+            if pool.worker_status == 'R':
+# A direct call by each worker if worker is not in pending mode
+                return cls(*args, **kwargs)
+
+            elif isinstance(args[0], mole.Mole):
                 obj = pool.apply(_init_register, (None, cls, args, kwargs),
                                  (cls.__module__, cls.__name__,
                                   (args[0].dumps(),)+args[1:], kwargs))
@@ -338,8 +342,12 @@ def _decode_call(f_arg):
 if rank == 0:
     def parallel_call(f):
         def with_mpi(dev, *args, **kwargs):
-            return pool.apply(_decode_call, (None, f, dev, args, kwargs),
-                              (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+            if pool.worker_status == 'R':
+# A direct call by each worker if worker is not in pending mode
+                return f(dev, *args, **kwargs)
+            else:
+                return pool.apply(_decode_call, (None, f, dev, args, kwargs),
+                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
         return with_mpi
 else:
     def parallel_call(f):

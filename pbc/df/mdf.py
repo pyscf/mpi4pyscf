@@ -41,7 +41,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def _build(mydf, j_only=False, with_j3c=True):
+@mpi.parallel_call
+def build(mydf, j_only=False, with_j3c=True):
 # Unlike DF and PWDF class, here MDF objects are synced once
     if mpi.pool.size == 1:
         return mdf.MDF.build(mydf, j_only, with_j3c)
@@ -83,13 +84,11 @@ def _build(mydf, j_only=False, with_j3c=True):
     else:
         raise NotImplementedError
     return mydf
-build = mpi.parallel_call(_build)
 
 
 class _MDF(mdf.MDF, df._DF):
 
     build = build
-    _build = _build
     get_nuc = df.get_nuc
 
     def pack(self):
@@ -98,7 +97,6 @@ class _MDF(mdf.MDF, df._DF):
                 'kpts'      : self.kpts,
                 'gs'        : self.gs,
                 'eta'       : self.eta,
-                'exxdiv'    : self.exxdiv,
                 'blockdim'  : self.blockdim,
                 'auxbasis'  : self.auxbasis,
                 'metric'    : self.metric,

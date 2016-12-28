@@ -27,7 +27,7 @@ rank = mpi.rank
 def get_nuc(mydf, kpts):
     mydf = _sync_mydf(mydf)
 # Call the serial code because pw_loop and ft_loop methods are overloaded.
-    vne = lib.asarray(pwdf.get_nuc(mydf, kpts))
+    vne = pwdf.get_nuc(mydf, kpts)
     vne = mpi.reduce(vne)
     return vne
 
@@ -69,8 +69,7 @@ class _PWDF(pwdf.PWDF):
         return {'verbose'   : self.verbose,
                 'max_memory': self.max_memory,
                 'kpts'      : self.kpts,
-                'gs'        : self.gs,
-                'exxdiv'    : self.exxdiv}
+                'gs'        : self.gs}
     def unpack_(self, dfdic):
         self.__dict__.update(dfdic)
         return self

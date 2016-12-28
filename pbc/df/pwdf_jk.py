@@ -20,7 +20,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def _get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band):
+@mpi.parallel_call
+def get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -93,11 +94,11 @@ def _get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band):
                 return vj_kpts[:,0]
         else:
             return vj_kpts.reshape(dm_kpts.shape)
-get_j_kpts = mpi.parallel_call(_get_j_kpts)
 
 
-def _get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
-                exxdiv=None):
+@mpi.parallel_call
+def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
+               exxdiv=None):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -190,7 +191,6 @@ def _get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
                 return vk_kpts[:,0]
         else:
             return vk_kpts.reshape(dm_kpts.shape)
-get_k_kpts = mpi.parallel_call(_get_k_kpts)
 
 
 ##################################################
@@ -207,9 +207,9 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     if kpt_band is not None and abs(kpt-kpt_band).sum() > 1e-9:
         kpt = numpy.reshape(kpt, (1,3))
         if with_k:
-            vk = _get_k_kpts(mydf, [dm], hermi, kpt, kpt_band, exxdiv)
+            vk = get_k_kpts(mydf, [dm], hermi, kpt, kpt_band, exxdiv)
         if with_j:
-            vj = _get_j_kpts(mydf, [dm], hermi, kpt, kpt_band)
+            vj = get_j_kpts(mydf, [dm], hermi, kpt, kpt_band)
         return vj, vk
 
     mydf = _sync_mydf(mydf)
