@@ -271,12 +271,12 @@ def _assert(condition):
         sys.stderr.write(''.join(traceback.format_stack()[:-1]))
         comm.Abort()
 
-def del_registry(reg_keys):
-    if reg_keys:
-        def f(reg_keys):
+def del_registry(reg_procs):
+    if reg_procs:
+        def f(reg_procs):
             from mpi4pyscf.tools import mpi
-            mpi._registry.pop(reg_keys[mpi.rank])
-        pool.apply(f, reg_keys, reg_keys)
+            mpi._registry.pop(reg_procs[mpi.rank])
+        pool.apply(f, reg_procs, reg_procs)
     return []
 
 def _init_register(f_arg):
@@ -287,7 +287,7 @@ def _init_register(f_arg):
     else:
         from pyscf.gto import mole
         from pyscf.pbc.gto import cell
-# Guess whether the args[0] is serialized mole or cell
+# Guess whether the args[0] is the serialized mole or cell objects
         if isinstance(args[0], str) and args[0][0] == '{':
             if '_pseudo' in args[0]:
                 c = cell.loads(args[0])
@@ -304,7 +304,7 @@ def _init_register(f_arg):
     mpi._registry[key] = obj
     keys = mpi.comm.gather(key)
     if mpi.rank == 0:
-        obj._reg_keys = keys
+        obj._reg_procs = keys
         return obj
 
 if rank == 0:
@@ -325,32 +325,21 @@ else:
     def register_class(cls):
         return cls
 
-def register_for(obj):
-    global _registry
-    key = id(obj)
-    # Keep track of the object in a global registry.  On slave nodes, the
-    # object can be accessed from global registry.
-    _registry[key] = obj
-    keys = comm.gather(key)
-    if rank == 0:
-        obj._reg_keys = keys
-    return obj
-
 def _decode_call(f_arg):
-    module, name, reg_keys, args, kwargs = f_arg
-    if module is None:
+    module, name, reg_procs, args, kwargs = f_arg
+    if module is None:  # Master processor
         fn = name
-        dev = reg_keys
+        dev = reg_procs
     else:
         from mpi4pyscf.tools import mpi
-        dev = mpi._registry[reg_keys[mpi.rank]]
+        dev = mpi._registry[reg_procs[mpi.rank]]
         fn = getattr(importlib.import_module(module), name)
     return fn(dev, *args, **kwargs)
 if rank == 0:
     def parallel_call(f):
         def with_mpi(dev, *args, **kwargs):
             return pool.apply(_decode_call, (None, f, dev, args, kwargs),
-                              (f.__module__, f.__name__, dev._reg_keys, args, kwargs))
+                              (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
         return with_mpi
 else:
     def parallel_call(f):

@@ -230,6 +230,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     else:
         feri = h5py.File(mydf._cderi, 'w')
 
+    rcut = max(cell.rcut, auxcell.rcut)
+    Ls = cell.get_lattice_Ls(rcut=rcut)
+    log.debug1('pbc.mdf rcut=%s', rcut)
+    log.debug3('Ls = %s', Ls)
     def gen_int3c(auxcell, intor, label, job_id, ish0, ish1):
         aux_loc = auxcell.ao_loc_nr('ssc' in intor)
         naux = aux_loc[-1]
@@ -240,7 +244,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         xyz = numpy.asarray(cell.atom_coords(), order='C')
         ptr_coordL = cell._atm[:,PTR_COORD]
         ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-        Ls = cell.get_lattice_Ls(cell.nimgs)
 
         di = ao_loc[ish1] - ao_loc[ish0]
         dij = di * nao

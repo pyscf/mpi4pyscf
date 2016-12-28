@@ -14,7 +14,8 @@ import numpy
 
 from pyscf import lib
 from pyscf.pbc import tools
-from pyscf.pbc.df.mdf_jk import zdotNN, zdotNC, zdotCN
+from pyscf.pbc.df.df_jk import _ewald_exxdiv_for_G0
+from pyscf.pbc.df.df_jk import zdotNN, zdotNC, zdotCN
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -61,8 +62,6 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
 
 def _get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                 kpt_band=None):
-    if mydf._cderi is None:
-        mydf._build()
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -125,8 +124,6 @@ def _get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                 vjI[i,k] += numpy.dot(pqkR, vI[i,p0:p1])
         pqkR = pqkI = None
 
-    dmsR = dms.real.transpose(0,1,3,2).reshape(nset,nkpts,nao**2)
-    dmsI = dms.imag.transpose(0,1,3,2).reshape(nset,nkpts,nao**2)
     rhoR  = numpy.zeros((nset,naux))
     rhoI  = numpy.zeros((nset,naux))
     jauxR = numpy.zeros((nset,naux))
@@ -198,8 +195,6 @@ get_j_kpts = mpi.parallel_call(_get_j_kpts)
 
 def _get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                 kpt_band=None, exxdiv=None):
-    if mydf._cderi is None:
-        mydf._build()
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
@@ -397,7 +392,7 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
-    t1 = (time.clock(), time.time())
+    t0 = t1 = (time.clock(), time.time())
 
     dm = numpy.asarray(dm, order='C')
     dms = _format_dms(dm, [kpt])
@@ -409,172 +404,71 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     naux = mydf.auxcell.nao_nr()
     kptii = numpy.asarray((kpt,kpt))
     kpt_allow = numpy.zeros(3)
-
-    if with_j:
-        vjcoulG = mydf.weighted_coulG(kpt, False, mydf.gs)
-        vjR = numpy.zeros((nset,nao**2))
-        vjI = numpy.zeros((nset,nao**2))
-    if with_k:
-        mydf.exxdiv = exxdiv
-        vkcoulG = mydf.weighted_coulG(kpt, True, mydf.gs)
-        vkR = numpy.zeros((nset,nao,nao))
-        vkI = numpy.zeros((nset,nao,nao))
     dmsR = dms.real.reshape(nset,nao,nao)
     dmsI = dms.imag.reshape(nset,nao,nao)
     mem_now = lib.current_memory()[0]
-    max_memory = max(2000, (mydf.max_memory - mem_now)) * .8
-    log.alldebug1('max_memory = %d MB (%d in use)', max_memory, mem_now)
-    t2 = t1
-
-    # rho_rs(-G+k_rs) is computed as conj(rho_{rs^*}(G-k_rs))
-    #               == conj(transpose(rho_sr(G+k_sr), (0,2,1)))
-    blksize = max(int(max_memory*.25e6/16/nao**2), 16)
-    bufR = numpy.empty(blksize*nao**2)
-    bufI = numpy.empty(blksize*nao**2)
-    for pqkR, pqkI, p0, p1 in mydf.pw_loop(mydf.gs, kptii, max_memory=max_memory):
-        t2 = log.alltimer_debug2('%d:%d ft_aopair'%(p0,p1), *t2)
-        if with_j:
-            for i in range(nset):
-                if j_real:
-                    rhoR = numpy.dot(dmsR[i].ravel(), pqkR)
-                    rhoI = numpy.dot(dmsR[i].ravel(), pqkI)
-                    rhoR *= vjcoulG[p0:p1]
-                    rhoI *= vjcoulG[p0:p1]
-                    vjR[i] += numpy.dot(pqkR, rhoR)
-                    vjR[i] += numpy.dot(pqkI, rhoI)
-                else:
-                    rhoR = numpy.dot(dmsR[i].ravel(), pqkR)
-                    rhoR+= numpy.dot(dmsI[i].ravel(), pqkI)
-                    rhoI = numpy.dot(dmsI[i].ravel(), pqkR)
-                    rhoI-= numpy.dot(dmsR[i].ravel(), pqkI)
-                    rhoR *= vjcoulG[p0:p1]
-                    rhoI *= vjcoulG[p0:p1]
-                    vjR[i] += numpy.dot(pqkR, rhoR)
-                    vjR[i] -= numpy.dot(pqkI, rhoI)
-                    vjI[i] += numpy.dot(pqkR, rhoI)
-                    vjI[i] += numpy.dot(pqkI, rhoR)
-        #t2 = log.alltimer_debug2('        with_j', *t2)
-
-        if with_k:
-            coulG = numpy.sqrt(vkcoulG[p0:p1])
-            pqkR *= coulG
-            pqkI *= coulG
-            #:v4 = numpy.einsum('ijL,lkL->ijkl', pqk, pqk.conj())
-            #:vk += numpy.einsum('ijkl,jk->il', v4, dm)
-            pLqR = lib.transpose(pqkR.reshape(nao,nao,-1), axes=(0,2,1), out=bufR).reshape(-1,nao)
-            pLqI = lib.transpose(pqkI.reshape(nao,nao,-1), axes=(0,2,1), out=bufI).reshape(-1,nao)
-            iLkR = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkR)
-            iLkI = numpy.ndarray((nao*(p1-p0),nao), buffer=pqkI)
-            for i in range(nset):
-                if k_real:
-                    lib.dot(pLqR, dmsR[i], 1, iLkR)
-                    lib.dot(pLqI, dmsR[i], 1, iLkI)
-                    lib.dot(iLkR.reshape(nao,-1), pLqR.reshape(nao,-1).T, 1, vkR[i], 1)
-                    lib.dot(iLkI.reshape(nao,-1), pLqI.reshape(nao,-1).T, 1, vkR[i], 1)
-                else:
-                    zdotNN(pLqR, pLqI, dmsR[i], dmsI[i], 1, iLkR, iLkI)
-                    zdotNC(iLkR.reshape(nao,-1), iLkI.reshape(nao,-1),
-                           pLqR.reshape(nao,-1).T, pLqI.reshape(nao,-1).T,
-                           1, vkR[i], vkI[i])
-            #t2 = log.alltimer_debug2('        with_k', *t2)
-        pqkR = pqkI = coulG = pLqR = pLqI = iLkR = iLkI = None
-        #t2 = log.alltimer_debug2('%d:%d'%(p0,p1), *t2)
-    bufR = bufI = None
-    t1 = log.alltimer_debug2('get_jk pass 1', *t1)
-
-    max_memory = max(2000, (mydf.max_memory - lib.current_memory()[0])) * .45
+    max_memory = max(2000, (mydf.max_memory - mem_now))
     if with_j:
-        vjR = vjR.reshape(nset,nao,nao)
-        vjI = vjI.reshape(nset,nao,nao)
-
+        vjR = numpy.zeros((nset,nao,nao))
+        vjI = numpy.zeros((nset,nao,nao))
     if with_k:
+        vkR = numpy.zeros((nset,nao,nao))
+        vkI = numpy.zeros((nset,nao,nao))
         buf1R = numpy.empty((mydf.blockdim*nao**2))
         buf2R = numpy.empty((mydf.blockdim*nao**2))
-        buf3R = numpy.empty((mydf.blockdim*nao**2))
-        if not k_real:
-            buf1I = numpy.empty((mydf.blockdim*nao**2))
-            buf2I = numpy.empty((mydf.blockdim*nao**2))
-            buf3I = numpy.empty((mydf.blockdim*nao**2))
-    def contract_k(pLqR, pLqI, pjqR, pjqI):
+        buf1I = numpy.zeros((mydf.blockdim*nao**2))
+        buf2I = numpy.empty((mydf.blockdim*nao**2))
+        max_memory *= .5
+    log.alldebug1('max_memory = %d MB (%d in use)', max_memory, mem_now)
+    def contract_k(pLqR, pLqI):
         # K ~ 'iLj,lLk*,li->kj' + 'lLk*,iLj,li->kj'
         nrow = pLqR.shape[1]
-        tmpR = numpy.ndarray((nao,nrow*nao), buffer=buf3R)
+        tmpR = numpy.ndarray((nao,nrow*nao), buffer=buf2R)
         if k_real:
             for i in range(nset):
-                tmpR = lib.ddot(dmsR[i], pjqR.reshape(nao,-1), 1, tmpR)
-                vk1R = lib.ddot(pLqR.reshape(-1,nao).T, tmpR.reshape(-1,nao))
-                vkR[i] += vk1R
-                if hermi:
-                    vkR[i] += vk1R.T
-                else:
-                    tmpR = lib.ddot(dmsR[i], pLqR.reshape(nao,-1), 1, tmpR)
-                    lib.ddot(pjqR.reshape(-1,nao).T, tmpR.reshape(-1,nao),
-                             1, vkR[i], 1)
+                lib.ddot(dmsR[i], pLqR.reshape(nao,-1), 1, tmpR)
+                lib.ddot(pLqR.reshape(-1,nao).T, tmpR.reshape(-1,nao), 1, vkR[i], 1)
         else:
-            tmpI = numpy.ndarray((nao,nrow*nao), buffer=buf3I)
+            tmpI = numpy.ndarray((nao,nrow*nao), buffer=buf2I)
             for i in range(nset):
-                tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pjqR.reshape(nao,-1),
-                                    pjqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                vk1R, vk1I = zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
-                                    tmpR.reshape(-1,nao), tmpI.reshape(-1,nao))
-                vkR[i] += vk1R
-                vkI[i] += vk1I
-                if hermi:
-                    vkR[i] += vk1R.T
-                    vkI[i] -= vk1I.T
-                else:
-                    tmpR, tmpI = zdotNN(dmsR[i], dmsI[i], pLqR.reshape(nao,-1),
-                                        pLqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
-                    zdotCN(pjqR.reshape(-1,nao).T, pjqI.reshape(-1,nao).T,
-                           tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
-                           1, vkR[i], vkI[i], 1)
-
-    pLqI = pjqI = None
+                zdotNN(dmsR[i], dmsI[i], pLqR.reshape(nao,-1),
+                       pLqI.reshape(nao,-1), 1, tmpR, tmpI, 0)
+                zdotCN(pLqR.reshape(-1,nao).T, pLqI.reshape(-1,nao).T,
+                       tmpR.reshape(-1,nao), tmpI.reshape(-1,nao),
+                       1, vkR[i], vkI[i], 1)
+    pLqI = None
     thread_k = None
-    for LpqR, LpqI, j3cR, j3cI in mydf.sr_loop(kptii, max_memory, False):
+    for LpqR, LpqI in mydf.sr_loop(kptii, max_memory, False):
         LpqR = LpqR.reshape(-1,nao,nao)
-        LpqI = LpqI.reshape(-1,nao,nao)
-        j3cR = j3cR.reshape(-1,nao,nao)
-        j3cI = j3cI.reshape(-1,nao,nao)
-        t2 = log.alltimer_debug2('        load', *t2)
+        t1 = log.alltimer_debug2('        load', *t1)
         if thread_k is not None:
             thread_k.join()
         if with_j:
             rhoR  = numpy.einsum('Lpq,xpq->xL', LpqR, dmsR)
-            jauxR = numpy.einsum('Lpq,xpq->xL', j3cR, dmsR)
             if not j_real:
+                LpqI = LpqI.reshape(-1,nao,nao)
                 rhoR -= numpy.einsum('Lpq,xpq->xL', LpqI, dmsI)
                 rhoI  = numpy.einsum('Lpq,xpq->xL', LpqR, dmsI)
                 rhoI += numpy.einsum('Lpq,xpq->xL', LpqI, dmsR)
-                jauxR-= numpy.einsum('Lpq,xpq->xL', j3cI, dmsI)
-                jauxI = numpy.einsum('Lpq,xpq->xL', j3cR, dmsI)
-                jauxI+= numpy.einsum('Lpq,xpq->xL', j3cI, dmsR)
-
-            vjR += numpy.einsum('xL,Lpq->xpq', jauxR, LpqR)
-            vjR += numpy.einsum('xL,Lpq->xpq', rhoR, j3cR)
+            vjR += numpy.einsum('xL,Lpq->xpq', rhoR, LpqR)
             if not j_real:
-                vjR -= numpy.einsum('xL,Lpq->xpq', jauxI, LpqI)
-                vjR -= numpy.einsum('xL,Lpq->xpq', rhoI, j3cI)
-                vjI += numpy.einsum('xL,Lpq->xpq', jauxR, LpqI)
-                vjI += numpy.einsum('xL,Lpq->xpq', jauxI, LpqR)
-                vjI += numpy.einsum('xL,Lpq->xpq', rhoR, j3cI)
-                vjI += numpy.einsum('xL,Lpq->xpq', rhoI, j3cR)
-        t2 = log.alltimer_debug2('        with_j', *t2)
+                vjR -= numpy.einsum('xL,Lpq->xpq', rhoI, LpqI)
+                vjI += numpy.einsum('xL,Lpq->xpq', rhoR, LpqI)
+                vjI += numpy.einsum('xL,Lpq->xpq', rhoI, LpqR)
+
+        t1 = log.alltimer_debug2('        with_j', *t1)
         if with_k:
             nrow = LpqR.shape[0]
             pLqR = numpy.ndarray((nao,nrow,nao), buffer=buf1R)
-            pjqR = numpy.ndarray((nao,nrow,nao), buffer=buf2R)
             pLqR[:] = LpqR.transpose(1,0,2)
-            pjqR[:] = j3cR.transpose(1,0,2)
             if not k_real:
                 pLqI = numpy.ndarray((nao,nrow,nao), buffer=buf1I)
-                pjqI = numpy.ndarray((nao,nrow,nao), buffer=buf2I)
-                pLqI[:] = LpqI.transpose(1,0,2)
-                pjqI[:] = j3cI.transpose(1,0,2)
+                if LpqI is not None:
+                    pLqI[:] = LpqI.reshape(-1,nao,nao).transpose(1,0,2)
 
-            thread_k = lib.background_thread(contract_k, pLqR, pLqI, pjqR, pjqI)
-            t2 = log.alltimer_debug2('        with_k', *t2)
-        LpqR = LpqI = j3cR = j3cI = None
+            thread_k = lib.background_thread(contract_k, pLqR, pLqI)
+            t1 = log.alltimer_debug2('        with_k', *t1)
+        LpqR = LpqI = pLqR = pLqI = tmpR = tmpI = None
     if thread_k is not None:
         thread_k.join()
     thread_k = None
@@ -585,7 +479,7 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     if with_k:
         vkR = mpi.reduce(vkR)
         vkI = mpi.reduce(vkI)
-    t1 = log.alltimer_debug2('get_jk pass 2', *t1)
+    t0 = log.alltimer_debug2('get_jk', *t0)
 
     if rank == 0:
         if with_j:
@@ -599,9 +493,14 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
                 vk = vkR
             else:
                 vk = vkR + vkI * 1j
+            if exxdiv is not None:
+                assert(exxdiv.lower() == 'ewald')
+                _ewald_exxdiv_for_G0(cell, kpt, dms, vk)
             vk = vk.reshape(dm.shape)
+        print abs(vj).sum(), abs(vk).sum(), 'mpi'
         t1 = log.timer_debug1('sr jk', *t1)
         return vj, vk
+
 
 def is_zero(kpt):
     return kpt is None or abs(kpt).sum() < 1e-9

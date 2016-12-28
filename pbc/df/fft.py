@@ -156,7 +156,7 @@ class _FFTDF(fft.FFTDF):
     def __exit__(self):
         self.close()
     def close(self):
-        self._reg_keys = mpi.del_registry(self._reg_keys)
+        self._reg_procs = mpi.del_registry(self._reg_procs)
 
     def pack(self):
         return {'verbose'   : self.verbose,

@@ -201,7 +201,7 @@ get_k_kpts = mpi.parallel_call(_get_k_kpts)
 
 @mpi.parallel_call
 def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
-            kpt_band=None, with_j=True, with_k=True, exxdiv=None):
+           kpt_band=None, with_j=True, with_k=True, exxdiv=None):
     '''JK for given k-point'''
     vj = vk = None
     if kpt_band is not None and abs(kpt-kpt_band).sum() > 1e-9:

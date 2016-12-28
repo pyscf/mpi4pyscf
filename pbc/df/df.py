@@ -30,8 +30,8 @@ from pyscf.ao2mo.outcore import balance_segs
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-#from mpi4pyscf.pbc.df import df_jk
-#from mpi4pyscf.pbc.df import df_ao2mo
+from mpi4pyscf.pbc.df import df_jk
+from mpi4pyscf.pbc.df import df_ao2mo
 from mpi4pyscf.pbc.df import pwdf
 
 comm = mpi.comm
@@ -174,30 +174,30 @@ class _DF(df.DF, pwdf._PWDF):
         self.__dict__.update(dfdic)
         return self
 
-#    def get_jk(self, dm, hermi=1, kpts=None, kpt_band=None,
-#               with_j=True, with_k=True, exxdiv='ewald'):
-#        if kpts is None:
-#            if numpy.all(self.kpts == 0):
-#                # Gamma-point calculation by default
-#                kpts = numpy.zeros(3)
-#            else:
-#                kpts = self.kpts
-#        else:
-#            kpts = numpy.asarray(kpts)
-#
-#        if kpts.shape == (3,):
-#            return df_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
-#                                with_k, exxdiv)
-#
-#        vj = vk = None
-#        if with_k:
-#            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
-#        if with_j:
-#            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
-#        return vj, vk
-#
-#    get_eri = get_ao_eri = df_ao2mo.get_eri
-#    ao2mo = get_mo_eri = df_ao2mo.general
+    def get_jk(self, dm, hermi=1, kpts=None, kpt_band=None,
+               with_j=True, with_k=True, exxdiv='ewald'):
+        if kpts is None:
+            if numpy.all(self.kpts == 0):
+                # Gamma-point calculation by default
+                kpts = numpy.zeros(3)
+            else:
+                kpts = self.kpts
+        else:
+            kpts = numpy.asarray(kpts)
+
+        if kpts.shape == (3,):
+            return df_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
+                                with_k, exxdiv)
+
+        vj = vk = None
+        if with_k:
+            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
+        if with_j:
+            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
+        return vj, vk
+
+    get_eri = get_ao_eri = df_ao2mo.get_eri
+    ao2mo = get_mo_eri = df_ao2mo.general
 
 DF = mpi.register_class(_DF)
 
@@ -285,6 +285,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     else:
         feri = h5py.File(mydf._cderi, 'w')
 
+    rcut = max(cell.rcut, auxcell.rcut)
+    Ls = cell.get_lattice_Ls(rcut=rcut)
+    log.debug1('pbc.df rcut=%s', rcut)
+    log.debug3('Ls = %s', Ls)
+
     def gen_int3c(auxcell, intor, job_id, ish0, ish1):
         aux_loc = auxcell.ao_loc_nr('ssc' in intor)
         naux = aux_loc[-1]
@@ -295,7 +300,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         xyz = numpy.asarray(cell.atom_coords(), order='C')
         ptr_coordL = cell._atm[:,PTR_COORD]
         ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-        Ls = cell.get_lattice_Ls(cell.nimgs)
 
         di = ao_loc[ish1] - ao_loc[ish0]
         dij = di * nao
@@ -369,7 +373,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             if is_zero(kpt):
                 for i, c in enumerate(vbar):
                     if c != 0:
-                        v[i] -= c * ovlp[k][i0:i1].ravel()
+                        v[i] -= c*ccsum_fac * ovlp[k][i0:i1].ravel()
             j3cR.append(numpy.asarray(v.real, order='C'))
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
                 j3cI.append(None)
@@ -527,8 +531,8 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
 # It is because the summation over real space images are splited by mpi.static_partition
 def _int_nuc_vloc(cell, nuccell, kpts):
     '''Vnuc - Vloc'''
-    nimgs = numpy.max((cell.nimgs, nuccell.nimgs), axis=0)
-    Ls = numpy.asarray(cell.get_lattice_Ls(nimgs), order='C')
+    rcut = max(cell.rcut, nuccell.rcut)
+    Ls = cell.get_lattice_Ls(rcut=rcut)
     expLk = numpy.asarray(numpy.exp(1j*numpy.dot(Ls, kpts.T)), order='C')
     nkpts = len(kpts)
 
