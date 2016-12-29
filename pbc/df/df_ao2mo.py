@@ -10,7 +10,6 @@ from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
 from pyscf.pbc import tools
 from pyscf.pbc.df import df_ao2mo
-from pyscf.pbc.df.df_jk import zdotNN, zdotCN, zdotNC
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi

@@ -11,14 +11,8 @@ Ref:
 import time
 import copy
 import numpy
-
-from pyscf import lib
-from pyscf.pbc import tools
 from pyscf.pbc.df import df_jk
-
-from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df.pwdf_jk import _format_dms
 
 comm = mpi.comm
 rank = mpi.rank
