@@ -155,7 +155,8 @@ def build(mydf, j_only=False, with_j3c=True):
     return mydf
 
 
-class _DF(df.DF, pwdf._PWDF):
+@mpi.register_class
+class DF(df.DF, pwdf.PWDF):
 
     build = build
     get_nuc = get_nuc
@@ -196,8 +197,6 @@ class _DF(df.DF, pwdf._PWDF):
 
     get_eri = get_ao_eri = df_ao2mo.get_eri
     ao2mo = get_mo_eri = df_ao2mo.general
-
-DF = mpi.register_class(_DF)
 
 
 def _make_j3c(mydf, cell, auxcell, kptij_lst):

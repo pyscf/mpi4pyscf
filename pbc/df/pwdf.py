@@ -57,13 +57,8 @@ def _sync_mydf(mydf):
     return mydf
 
 
-class _PWDF(pwdf.PWDF):
-    def __enter__(self):
-        return self
-    def __exit__(self):
-        self.close()
-    def close(self):
-        self._reg_procs = mpi.del_registry(self._reg_procs)
+@mpi.register_class
+class PWDF(pwdf.PWDF):
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -112,8 +107,6 @@ class _PWDF(pwdf.PWDF):
         if with_j:
             vj = pwdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
         return vj, vk
-
-PWDF = mpi.register_class(_PWDF)
 
 
 if __name__ == '__main__':

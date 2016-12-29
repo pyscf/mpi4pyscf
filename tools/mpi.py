@@ -279,15 +279,15 @@ def del_registry(reg_procs):
         pool.apply(f, reg_procs, reg_procs)
     return []
 
-def _init_register(f_arg):
+def _init_on_workers(f_arg):
     from mpi4pyscf.tools import mpi
     module, name, args, kwargs = f_arg
-    if module is None:
-        cls = name
+    if module is None:  # master proccess
+        obj = name
     else:
         from pyscf.gto import mole
         from pyscf.pbc.gto import cell
-# Guess whether the args[0] is the serialized mole or cell objects
+        # Guess whether the args[0] is the serialized mole or cell objects
         if isinstance(args[0], str) and args[0][0] == '{':
             if '_pseudo' in args[0]:
                 c = cell.loads(args[0])
@@ -296,35 +296,48 @@ def _init_register(f_arg):
                 m = mole.loads(args[0])
                 args = (m,) + args[1:]
         cls = getattr(importlib.import_module(module), name)
-    obj = cls(*args, **kwargs)
-
-    # Keep track of the object in a global registry.  On slave nodes, the
-    # object can be accessed from global registry.
+        obj = cls(*args, **kwargs)
     key = id(obj)
     mpi._registry[key] = obj
-    keys = mpi.comm.gather(key)
-    if mpi.rank == 0:
-        obj._reg_procs = keys
-        return obj
+    regs = mpi.comm.gather(key)
+    return regs
 
 if rank == 0:
-    def register_class(cls):
-        from pyscf.gto import mole
-        from pyscf.pbc.gto import cell
-        def with_mpi(*args, **kwargs):
-            if pool.worker_status == 'R':
-# A direct call by each worker if worker is not in pending mode
-                return cls(*args, **kwargs)
+    from pyscf.gto import mole
+    def _init_and_register(cls):
+        old_init = cls.__init__
+        def init(obj, *args, **kwargs):
+            old_init(obj, *args, **kwargs)
 
-            elif isinstance(args[0], mole.Mole):
-                obj = pool.apply(_init_register, (None, cls, args, kwargs),
-                                 (cls.__module__, cls.__name__,
-                                  (args[0].dumps(),)+args[1:], kwargs))
-            else:
-                obj = pool.apply(_init_register, (None, cls, args, kwargs),
-                                 (cls.__module__, cls.__name__, args, kwargs))
-            return obj
-        return with_mpi
+# * Do not issue mpi communication inside the __init__ method
+# * Avoid the distributed class being called twice from subclass  __init__ method
+# * hasattr(obj, '_reg_procs') to ensure class is created only once
+# * If class initialized in mpi session, bypass the distributing step
+            if pool.worker_status == 'P' and not hasattr(obj, '_reg_procs'):
+                cls = obj.__class__
+                if isinstance(args[0], mole.Mole):
+                    regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
+                                      (cls.__module__, cls.__name__,
+                                       (args[0].dumps(),)+args[1:], kwargs))
+                else:
+                    regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
+                                      (cls.__module__, cls.__name__, args, kwargs))
+
+                # Keep track of the object in a global registry.  The object can
+                # be accessed from global registry on workers.
+                obj._reg_procs = regs
+        return init
+    def _with_enter(obj):
+        return obj
+    def _with_exit(obj):
+        obj._reg_procs = del_registry(obj._reg_procs)
+
+    def register_class(cls):
+        cls.__init__ = _init_and_register(cls)
+        cls.__enter__ = _with_enter
+        cls.__exit__ = _with_exit
+        cls.close = _with_exit
+        return cls
 else:
     def register_class(cls):
         return cls
@@ -343,7 +356,7 @@ if rank == 0:
     def parallel_call(f):
         def with_mpi(dev, *args, **kwargs):
             if pool.worker_status == 'R':
-# A direct call by each worker if worker is not in pending mode
+# A direct call if worker is not in pending mode
                 return f(dev, *args, **kwargs)
             else:
                 return pool.apply(_decode_call, (None, f, dev, args, kwargs),

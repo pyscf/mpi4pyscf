@@ -148,15 +148,10 @@ def _sync_mydf(mydf):
     return mydf
 
 
-class _FFTDF(fft.FFTDF):
+@mpi.register_class
+class FFTDF(fft.FFTDF):
     '''Density expansion on plane waves
     '''
-    def __enter__(self):
-        return self
-    def __exit__(self):
-        self.close()
-    def close(self):
-        self._reg_procs = mpi.del_registry(self._reg_procs)
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -236,8 +231,6 @@ class _FFTDF(fft.FFTDF):
             if with_j:
                 vj = fft_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
         return vj, vk
-
-FFTDF = mpi.register_class(_FFTDF)
 
 
 if __name__ == '__main__':
