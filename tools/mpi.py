@@ -342,7 +342,7 @@ else:
     def register_class(cls):
         return cls
 
-def _decode_call(f_arg):
+def _distribute_call(f_arg):
     module, name, reg_procs, args, kwargs = f_arg
     if module is None:  # Master processor
         fn = name
@@ -359,9 +359,35 @@ if rank == 0:
 # A direct call if worker is not in pending mode
                 return f(dev, *args, **kwargs)
             else:
-                return pool.apply(_decode_call, (None, f, dev, args, kwargs),
+                return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
                                   (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
         return with_mpi
+
 else:
     def parallel_call(f):
         return f
+
+def _reduce_call(f_arg):
+    from mpi4pyscf.tools import mpi
+    module, name, reg_procs, args, kwargs = f_arg
+    if module is None:  # Master processor
+        fn = name
+        dev = reg_procs
+    else:
+        dev = mpi._registry[reg_procs[mpi.rank]]
+        fn = getattr(importlib.import_module(module), name)
+    return mpi.reduce(fn(dev, *args, **kwargs))
+if rank == 0:
+    def call_then_reduce(f):
+        def with_mpi(dev, *args, **kwargs):
+            if pool.worker_status == 'R':
+# A direct call if worker is not in pending mode
+                return reduce(f(dev, *args, **kwargs))
+            else:
+                return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
+                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+        return with_mpi
+else:
+    def call_then_reduce(f):
+        return f
+
