@@ -3,14 +3,14 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
-from pyscf.pbc.df import mdf_ao2mo
+from pyscf.pbc.df import pwdf_ao2mo
 from mpi4pyscf.tools import mpi
 
 comm = mpi.comm
 rank = mpi.rank
 
-get_eri = mpi.call_then_reduce(mdf_ao2mo.get_eri)
-general = mpi.call_then_reduce(mdf_ao2mo.general)
+get_eri = mpi.call_then_reduce(pwdf_ao2mo.get_eri)
+general = mpi.call_then_reduce(pwdf_ao2mo.general)
 
 
 if __name__ == '__main__':
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     numpy.random.seed(1)
     kpts = numpy.random.random((4,3))
     kpts[3] = -numpy.einsum('ij->j', kpts[:3])
-    with_df = df.MDF(cell)
+    with_df = df.PWDF(cell)
     with_df.kpts = kpts
     mo =(numpy.random.random((nao,nao)) +
          numpy.random.random((nao,nao))*1j)

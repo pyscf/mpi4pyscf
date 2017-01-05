@@ -53,12 +53,7 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
     return mf
 
 
-@mpi.parallel_call
-def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
-               kpt_band=None):
-    vj = df_jk.get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band)
-    vj = mpi.reduce(vj)
-    return vj
+get_j_kpts = mpi.call_then_reduce(df_jk.get_j_kpts)
 
 @mpi.parallel_call
 def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
