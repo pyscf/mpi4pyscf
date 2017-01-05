@@ -30,26 +30,9 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def init_DF(cell, kpts=numpy.zeros((1,3))):
-    mydf = mpi.pool.apply(_init_DF_wrap, [cell, kpts], [cell.dumps(), kpts])
-    return mydf
-DF = init_DF
-def _init_DF_wrap(args):
-    from mpi4pyscf.pbc.df import fft
-    cell, kpts = args
-    if fft.rank > 0:
-        cell = fft.pgto.loads(cell)
-        cell.verbose = 0
-    return fft.mpi.register_for(fft._DF(cell, kpts))
-
-def get_nuc(mydf, kpts=None):
-    args = (mydf._reg_keys, kpts)
-    return mpi.pool.apply(_get_nuc_wrap, args, args)
-def _get_nuc_wrap(args):
-    from mpi4pyscf.pbc.df import fft
-    return fft._get_nuc(*args)
-def _get_nuc(reg_keys, kpts):
-    mydf = fft_jk._load_df(reg_keys)
+@mpi.parallel_call
+def get_nuc(mydf, kpts):
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
@@ -80,14 +63,9 @@ def _get_nuc(reg_keys, kpts):
         return vne
 
 
+@mpi.parallel_call
 def get_pp(mydf, kpts=None):
-    args = (mydf._reg_keys, kpts)
-    return mpi.pool.apply(_get_pp_wrap, args, args)
-def _get_pp_wrap(args):
-    from mpi4pyscf.pbc.df import fft
-    return fft._get_pp(*args)
-def _get_pp(reg_keys, kpts=None):
-    mydf = fft_jk._load_df(reg_keys)
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
@@ -165,16 +143,24 @@ def _get_pp(reg_keys, kpts=None):
             vpp = vpp[0]
         return vpp
 
+def _sync_mydf(mydf):
+    mydf.unpack_(comm.bcast(mydf.pack()))
+    return mydf
 
-class _DF(fft.DF):
+
+@mpi.register_class
+class FFTDF(fft.FFTDF):
     '''Density expansion on plane waves
     '''
-    def __enter__(self):
+
+    def pack(self):
+        return {'verbose'   : self.verbose,
+                'max_memory': self.max_memory,
+                'kpts'      : self.kpts,
+                'gs'        : self.gs}
+    def unpack_(self, dfdic):
+        self.__dict__.update(dfdic)
         return self
-    def __exit__(self):
-        self.close()
-    def close(self):
-        self._reg_keys = mpi.del_registry(self._reg_keys)
 
     def mpi_aoR_loop(self, cell, gs=None, kpts=None, kpt_band=None):
         if kpts is None: kpts = self.kpts
@@ -262,14 +248,14 @@ if __name__ == '__main__':
     numpy.random.seed(19)
     kpts = numpy.random.random((5,3))
 
-    mydf = df.DF(cell)
+    mydf = df.FFTDF(cell)
     v = mydf.get_nuc()
     print(v.shape)
     v = mydf.get_pp(kpts)
     print(v.shape)
 
     cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
-    mydf = df.DF(cell)
+    mydf = df.FFTDF(cell)
     nao = cell.nao_nr()
     dm = numpy.ones((nao,nao))
     vj, vk = mydf.get_jk(dm)

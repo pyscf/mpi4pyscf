@@ -23,43 +23,22 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def init_PWDF(cell, kpts=numpy.zeros((1,3))):
-    mydf = mpi.pool.apply(_init_PWDF_wrap, [cell, kpts], [cell.dumps(), kpts])
-    return mydf
-PWDF = init_PWDF
-def _init_PWDF_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf
-    cell, kpts = args
-    if pwdf.rank > 0:
-        cell = pwdf.gto.loads(cell)
-        cell.verbose = 0
-    return pwdf.mpi.register_for(pwdf._PWDF(cell, kpts))
-
-def get_nuc(mydf, kpts=None):
-    args = (mydf._reg_keys, kpts)
-    return mpi.pool.apply(_get_nuc_wrap, args, args)
-def _get_nuc_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf
-    return pwdf._get_nuc(*args)
-def _get_nuc(reg_keys, kpts):
-    mydf = pwdf_jk._load_df(reg_keys)
-    vne = lib.asarray(pwdf.get_nuc(mydf, kpts))
+@mpi.parallel_call
+def get_nuc(mydf, kpts):
+    mydf = _sync_mydf(mydf)
+# Call the serial code because pw_loop and ft_loop methods are overloaded.
+    vne = pwdf.get_nuc(mydf, kpts)
     vne = mpi.reduce(vne)
     return vne
 
-def get_pp(mydf, kpts=None):
-    args = (mydf._reg_keys, kpts)
-    return mpi.pool.apply(_get_pp_wrap, args, args)
-def _get_pp_wrap(args):
-    from mpi4pyscf.pbc.df import pwdf
-    return pwdf._get_pp(*args)
-def _get_pp(reg_keys, kpts):
+@mpi.parallel_call
+def get_pp(mydf, kpts):
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
     else:
         kpts_lst = numpy.reshape(kpts, (-1,3))
 
-    mydf = pwdf_jk._load_df(reg_keys)
+    mydf = _sync_mydf(mydf)
     vpp = pwdf.get_pp_loc_part1(mydf, mydf.cell, kpts_lst)
     vpp = mpi.reduce(lib.asarray(vpp))
 
@@ -73,14 +52,22 @@ def _get_pp(reg_keys, kpts):
             vpp = vpp[0]
         return vpp
 
+def _sync_mydf(mydf):
+    mydf.unpack_(comm.bcast(mydf.pack()))
+    return mydf
 
-class _PWDF(pwdf.PWDF):
-    def __enter__(self):
+
+@mpi.register_class
+class PWDF(pwdf.PWDF):
+
+    def pack(self):
+        return {'verbose'   : self.verbose,
+                'max_memory': self.max_memory,
+                'kpts'      : self.kpts,
+                'gs'        : self.gs}
+    def unpack_(self, dfdic):
+        self.__dict__.update(dfdic)
         return self
-    def __exit__(self):
-        self.close()
-    def close(self):
-        self._reg_keys = mpi.del_registry(self._reg_keys)
 
     def prange(self, start, stop, step=None):
         # affect pw_loop and ft_loop function

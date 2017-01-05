@@ -23,21 +23,15 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band)
-    return mpi.pool.apply(_get_j_kpts_wrap, master_args, worker_args)
-def _get_j_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import fft_jk
-    return fft_jk._get_j_kpts(*args)
-def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None):
-    mydf = _load_df(reg_keys)
+@mpi.parallel_call
+def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
+               kpt_band=None):
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     gs = mydf.gs
 
     dm_kpts = lib.asarray(dm_kpts, order='C')
-    dms = _format_dms(dm_kpts, kpts)
+    dms = fft_jk._format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
 
     coulG = tools.get_coulG(cell, gs=gs)
@@ -56,7 +50,7 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
 
     if kpt_band is not None:
         if rank == 0:
-            for aoR_kband in mydf.aoR_loop(cell, gs, kpts, kpt_band):
+            for aoR_kband in mydf.aoR_loop(gs, kpts, kpt_band):
                 pass
             vj_kpts = [cell.vol/ngs * lib.dot(aoR_kband.T.conj()*vR[i], aoR_kband)
                        for i in range(nset)]
@@ -74,17 +68,10 @@ def _get_j_kpts(reg_keys, dm_kpts, hermi=1,
             vj_kpts = vj_kpts.reshape(nkpts,nset,nao,nao)
             return vj_kpts.transpose(1,0,2,3).reshape(dm_kpts.shape)
 
-def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
-               exxdiv=None):
-    master_args = (mydf._reg_keys, dm_kpts, hermi, kpts, kpt_band, exxdiv)
-    worker_args = (mydf._reg_keys, None, hermi, kpts, kpt_band, exxdiv)
-    return mpi.pool.apply(_get_k_kpts_wrap, master_args, worker_args)
-def _get_k_kpts_wrap(args):
-    from mpi4pyscf.pbc.df import fft_jk
-    return fft_jk._get_k_kpts(*args)
-def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
-                kpts=numpy.zeros((1,3)), kpt_band=None, exxdiv=None):
-    mydf = _load_df(reg_keys)
+@mpi.parallel_call
+def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
+               kpt_band=None, exxdiv=None):
+    mydf = _sync_mydf(mydf)
     cell = mydf.cell
     gs = mydf.gs
     coords = gen_grid.gen_uniform_grids(cell, gs)
@@ -92,7 +79,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
 
     kpts = numpy.asarray(kpts)
     dm_kpts = lib.asarray(dm_kpts, order='C')
-    dms = _format_dms(dm_kpts, kpts)
+    dms = fft_jk._format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
 
     weight = 1./nkpts * (cell.vol/ngs)
@@ -102,7 +89,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
             vk_kpts = numpy.zeros((nset,nao,nao), dtype=dms.dtype)
         else:
             vk_kpts = numpy.zeros((nset,nao,nao), dtype=numpy.complex128)
-        for k, aoR_kband in mydf.aoR_loop(cell, gs, kpts, kpt_band):
+        for k, aoR_kband in mydf.aoR_loop(gs, kpts, kpt_band):
             pass
         for k2, ao_k2 in mydf.mpi_aoR_loop(cell, gs, kpts):
             kpt2 = kpts[k2]
@@ -129,7 +116,7 @@ def _get_k_kpts(reg_keys, dm_kpts, hermi=1,
         for k2, ao_k2 in mydf.mpi_aoR_loop(cell, gs, kpts):
             kpt2 = kpts[k2]
             aoR_dms = [lib.dot(ao_k2, dms[i,k2]) for i in range(nset)]
-            for k1, ao_k1 in mydf.aoR_loop(cell, gs, kpts):
+            for k1, ao_k1 in mydf.aoR_loop(gs, kpts):
                 kpt1 = kpts[k1]
                 vkR_k1k2 = fft_jk.get_vkR(mydf, cell, ao_k1, ao_k2,
                                           kpt1, kpt2, coords, gs, exxdiv)
@@ -162,22 +149,7 @@ def get_k(mydf, dm, hermi=1, kpt=numpy.zeros(3), kpt_band=None, exxdiv=None):
     vk = get_k_kpts(mydf, dm_kpts, hermi, [kpt], kpt_band, exxdiv)
     return vk.reshape(dm.shape)
 
-def _load_df(reg_keys):
-    mydf = mpi._registry[reg_keys[rank]]
-    mydf.kpts, mydf.gs = comm.bcast((mydf.kpts, mydf.gs))
+def _sync_mydf(mydf):
+    mydf.unpack_(comm.bcast(mydf.pack()))
     return mydf
-
-def _format_dms(dm_kpts, kpts):
-    if rank == 0:
-        nkpts = len(kpts)
-        nao = dm_kpts.shape[-1]
-        dms = dm_kpts.reshape(-1,nkpts,nao,nao)
-        comm.bcast((dms.shape, dms.dtype))
-        comm.Bcast(dms)
-    else:
-        shape, dtype = comm.bcast(None)
-        nao = shape[-1]
-        dms = numpy.empty(shape, dtype=dtype)
-        comm.Bcast(dms)
-    return dms
 

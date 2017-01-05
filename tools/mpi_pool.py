@@ -11,6 +11,7 @@ __all__ = ["MPIPool", "MPIPoolException"]
 import os
 import sys
 import imp
+import importlib
 import types
 import marshal
 #import traceback
@@ -41,6 +42,7 @@ class MPIPool(object):
         self.size = self.comm.Get_size()
         self.debug = debug
         self.function = _error_function
+        self.worker_status = 'P'  # : R = running, P = pending
 
         if self.debug:
             import platform
@@ -104,7 +106,9 @@ class MPIPool(object):
                 self.function = types.FunctionType(code, globals())
 
             else:  # message are function args
+                self.worker_status = 'R'
                 self.function(task)
+                self.worker_status = 'P'
 
 
     def apply(self, function, master_args, worker_args):
@@ -122,10 +126,13 @@ class MPIPool(object):
             F = _function_wrapper(function)
             self.comm.bcast(F)
 
+        self.worker_status = 'R'
+
         # Send all the tasks off and wait for them to be received.
         self.comm.bcast(worker_args)
 
         result = function(master_args)
+        self.worker_status = 'P'
         return result
 
     def close(self):

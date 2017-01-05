@@ -8,7 +8,8 @@ import numpy
 from pyscf import lib
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
-from pyscf.pbc.df import mdf_ao2mo
+from pyscf.pbc import tools
+from pyscf.pbc.df import df_ao2mo
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -19,13 +20,14 @@ rank = mpi.rank
 
 @mpi.parallel_call
 def get_eri(mydf, kpts=None, compact=True):
-    eri = mdf_ao2mo.get_eri(mydf, kpts, compact)
+    eri = df_ao2mo.get_eri(mydf, kpts, compact)
     eri = mpi.reduce(eri)
     return eri
 
+
 @mpi.parallel_call
 def general(mydf, mo_coeffs, kpts=None, compact=True):
-    eri = mdf_ao2mo.get_eri(mydf, kpts, compact)
+    eri = df_ao2mo.get_eri(mydf, kpts, compact)
     eri = mpi.reduce(eri)
     if rank != 0:
         return

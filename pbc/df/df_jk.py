@@ -9,15 +9,16 @@ Ref:
 '''
 
 import time
+import copy
 import numpy
-from pyscf.pbc.df import mdf_jk
+from pyscf.pbc.df import df_jk
 from mpi4pyscf.tools import mpi
 
 comm = mpi.comm
 rank = mpi.rank
 
 #
-# Divide the Coulomb potential to two parts.  Computing short range part in
+# Split the Coulomb potential to two parts.  Computing short range part in
 # real space, long range part in reciprocal space.
 #
 
@@ -33,13 +34,13 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
             number of grids in each (+)direction
         with_df : MDF object
     '''
-    from mpi4pyscf.pbc.df import mdf
+    from mpi4pyscf.pbc.df import df
     if with_df is None:
         if hasattr(mf, 'kpts'):
             kpts = mf.kpts
         else:
             kpts = numpy.reshape(mf.kpt, (1,3))
-        with_df = mdf.MDF(mf.cell, kpts)
+        with_df = df.DF(mf.cell, kpts)
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
@@ -47,6 +48,7 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
         if gs is not None:
             with_df.gs = gs
 
+    mf = copy.copy(mf)
     mf.with_df = with_df
     return mf
 
@@ -54,7 +56,7 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
 @mpi.parallel_call
 def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                kpt_band=None):
-    vj = mdf_jk.get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band)
+    vj = df_jk.get_j_kpts(mydf, dm_kpts, hermi, kpts, kpt_band)
     vj = mpi.reduce(vj)
     return vj
 
@@ -63,7 +65,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                kpt_band=None, exxdiv=None):
     if rank != 0:  # to apply df_jk._ewald_exxdiv_for_G0 function once
         exxdiv = None
-    vk = mdf_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpt_band, exxdiv)
+    vk = df_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpt_band, exxdiv)
     vk = mpi.reduce(vk)
     return vk
 
@@ -78,9 +80,9 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
 def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
            kpt_band=None, with_j=True, with_k=True, exxdiv=None):
     '''JK for given k-point'''
-    if rank != 0:
+    if rank != 0:  # to apply df_jk._ewald_exxdiv_for_G0 function once
         exxdiv = None
-    vj, vk = mdf_jk.get_jk(mydf, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
+    vj, vk = df_jk.get_jk(mydf, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
 
     if with_j: vj = mpi.reduce(vj)
     if with_k: vk = mpi.reduce(vk)
