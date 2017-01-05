@@ -6,13 +6,16 @@
 '''Density expansion on plane waves'''
 
 import time
+import ctypes
 import copy
 import numpy
 
 from pyscf import lib
-from pyscf.pbc import gto
+from pyscf import gto
+from pyscf.pbc.df import incore
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import pwdf
+from pyscf.gto.mole import PTR_COORD
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -24,22 +27,24 @@ rank = mpi.rank
 
 
 @mpi.parallel_call
-def get_nuc(mydf, kpts):
+def get_nuc(mydf, kpts=None):
     mydf = _sync_mydf(mydf)
 # Call the serial code because pw_loop and ft_loop methods are overloaded.
     vne = pwdf.get_nuc(mydf, kpts)
     vne = mpi.reduce(vne)
     return vne
 
+get_pp_loc_part1 = get_nuc
+
 @mpi.parallel_call
-def get_pp(mydf, kpts):
+def get_pp(mydf, kpts=None):
     if kpts is None:
         kpts_lst = numpy.zeros((1,3))
     else:
         kpts_lst = numpy.reshape(kpts, (-1,3))
 
     mydf = _sync_mydf(mydf)
-    vpp = pwdf.get_pp_loc_part1(mydf, mydf.cell, kpts_lst)
+    vpp = pwdf.get_pp_loc_part1(mydf, kpts_lst)
     vpp = mpi.reduce(lib.asarray(vpp))
 
     if rank == 0:
@@ -51,6 +56,54 @@ def get_pp(mydf, kpts):
         if kpts is None or numpy.shape(kpts) == (3,):
             vpp = vpp[0]
         return vpp
+
+# Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
+# It is because the summation over real space images are splited by mpi.static_partition
+def _int_nuc_vloc(mydf, nuccell, kpts):
+    '''Vnuc - Vloc'''
+    cell = mydf.cell
+    rcut = max(cell.rcut, nuccell.rcut)
+    Ls = cell.get_lattice_Ls(rcut=rcut)
+    expLk = numpy.asarray(numpy.exp(1j*numpy.dot(Ls, kpts.T)), order='C')
+    nkpts = len(kpts)
+
+    fakenuc = pwdf._fake_nuc(cell)
+    fakenuc._atm, fakenuc._bas, fakenuc._env = \
+            gto.conc_env(nuccell._atm, nuccell._bas, nuccell._env,
+                         fakenuc._atm, fakenuc._bas, fakenuc._env)
+    charge = cell.atom_charges()
+    charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)
+
+    nao = cell.nao_nr()
+    #:buf = [numpy.zeros((nao,nao), order='F', dtype=numpy.complex128)
+    #:       for k in range(nkpts)]
+    buf = numpy.zeros((nkpts,8,nao,nao),
+                      dtype=numpy.complex128).transpose(0,3,2,1)
+    ints = incore._wrap_int3c(cell, fakenuc, 'cint3c2e_sph', 1, Ls, buf)
+    atm, bas, env = ints._envs[:3]
+
+    xyz = numpy.asarray(cell.atom_coords(), order='C')
+    ptr_coordL = atm[:cell.natm,PTR_COORD]
+    ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
+    nuc = 0
+    for atm0, atm1 in lib.prange(0, fakenuc.natm, 8):
+        c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
+                                        cell.nbas*2+atm0, cell.nbas*2+atm1)
+
+        for l in mpi.static_partition(range(len(Ls))):
+            L1 = Ls[l]
+            env[ptr_coordL] = xyz + L1
+            exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
+            exp_Lk = numpy.asarray(exp_Lk, order='C')
+            exp_Lk[l] = .5
+            ints(exp_Lk, c_shls_slice)
+        v = buf[:,:,:,:atm1-atm0]
+        nuc += numpy.einsum('kijz,z->kij', v, charge[atm0:atm1])
+        v[:] = 0
+
+    nuc = nuc + nuc.transpose(0,2,1).conj()
+# nuc is mpi.reduced in get_nuc function
+    return lib.pack_tril(nuc)
 
 def _sync_mydf(mydf):
     mydf.unpack_(comm.bcast(mydf.pack()))
@@ -83,6 +136,7 @@ class PWDF(pwdf.PWDF):
         return lib.prange(start, stop, step)
     mpi_prange = prange
 
+    _int_nuc_vloc = _int_nuc_vloc
     get_nuc = get_nuc
     get_pp = get_pp
 
@@ -118,7 +172,7 @@ if __name__ == '__main__':
     cell.basis = {'He': [(0, (2.5, 1)), (0, (1., 1))],
                   'C' :'gth-szv',}
     cell.pseudo = {'C':'gth-pade'}
-    cell.h = numpy.eye(3) * 2.5
+    cell.a = numpy.eye(3) * 2.5
     cell.gs = [5] * 3
     cell.build()
     numpy.random.seed(19)
@@ -130,7 +184,7 @@ if __name__ == '__main__':
     v = mydf.get_pp(kpts)
     print(v.shape)
 
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
     mydf = df.PWDF(cell)
     nao = cell.nao_nr()
     dm = numpy.ones((nao,nao))

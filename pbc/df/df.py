@@ -17,15 +17,12 @@ import scipy.linalg
 import h5py
 
 from pyscf import lib
-from pyscf.pbc import gto
-from pyscf.pbc import tools
-from pyscf.pbc.df import incore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import df
 from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, \
         estimate_eta, unique
 from pyscf.pbc.df.df_jk import zdotCN
-from pyscf.gto.mole import ANG_OF, PTR_COORD
+from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 
 from mpi4pyscf.lib import logger
@@ -36,83 +33,6 @@ from mpi4pyscf.pbc.df import pwdf
 
 comm = mpi.comm
 rank = mpi.rank
-
-
-@mpi.parallel_call
-def get_nuc(mydf, kpts=None):
-    mydf = _sync_mydf(mydf)
-    cell = mydf.cell
-    if kpts is None:
-        kpts_lst = numpy.zeros((1,3))
-    else:
-        kpts_lst = numpy.reshape(kpts, (-1,3))
-
-    log = logger.Logger(mydf.stdout, mydf.verbose)
-    t1 = t0 = (time.clock(), time.time())
-
-    nkpts = len(kpts_lst)
-    nao = cell.nao_nr()
-    nao_pair = nao * (nao+1) // 2
-
-    nuccell = copy.copy(cell)
-    half_sph_norm = .5/numpy.sqrt(numpy.pi)
-    norm = half_sph_norm/gto.mole._gaussian_int(2, mydf.eta)
-    chg_env = [mydf.eta, norm]
-    ptr_eta = cell._env.size
-    ptr_norm = ptr_eta + 1
-    chg_bas = [[ia, 0, 1, 1, 0, ptr_eta, ptr_norm, 0] for ia in range(cell.natm)]
-    nuccell._atm = cell._atm
-    nuccell._bas = numpy.asarray(chg_bas, dtype=numpy.int32)
-    nuccell._env = numpy.hstack((cell._env, chg_env))
-
-    vj = _int_nuc_vloc(cell, nuccell, kpts_lst)
-    t1 = log.timer_debug1('vnuc pass1: analytic int', *t1)
-
-    charge = -cell.atom_charges()
-    kpt_allow = numpy.zeros(3)
-    Gv, Gvbase, kws = cell.get_Gv_weights(mydf.gs)
-    coulG = tools.get_coulG(cell, kpt_allow, gs=mydf.gs, Gv=Gv)
-    coulG *= kws
-    aoaux = ft_ao.ft_ao(nuccell, Gv)
-    vGR = numpy.einsum('i,xi->x', charge, aoaux.real) * coulG
-    vGI = numpy.einsum('i,xi->x', charge, aoaux.imag) * coulG
-    if cell.dimension == 3:
-        nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(charge)])
-        nucbar *= numpy.pi/cell.vol
-        vGR[0] -= nucbar
-
-    vjR = numpy.zeros((nkpts,nao_pair))
-    vjI = numpy.zeros((nkpts,nao_pair))
-    max_memory = max(2000, mydf.max_memory-lib.current_memory()[0])
-    for k, pqkR, pqkI, p0, p1 \
-            in mydf.ft_loop(mydf.gs, kpt_allow, kpts_lst,
-                            max_memory=max_memory, aosym='s2'):
-        if not gamma_point(kpts_lst[k]):
-            vjI[k] += numpy.einsum('k,xk->x', vGR[p0:p1], pqkI)
-            vjI[k] -= numpy.einsum('k,xk->x', vGI[p0:p1], pqkR)
-        vjR[k] += numpy.einsum('k,xk->x', vGR[p0:p1], pqkR)
-        vjR[k] += numpy.einsum('k,xk->x', vGI[p0:p1], pqkI)
-        pqkR = pqkI = None
-    t1 = log.timer_debug1('contracting Vnuc', *t1)
-
-    for k, kpt in enumerate(kpts_lst):
-        if gamma_point(kpt):
-            vj[k] += lib.unpack_tril(vjR[k])
-        else:
-            vj[k] += lib.unpack_tril(vjR[k]+vjI[k]*1j)
-
-    vj = mpi.reduce(lib.asarray(vj))
-    if rank == 0:
-        nuc = []
-        for k, kpt in enumerate(kpts_lst):
-            if gamma_point(kpt):
-                nuc.append(vj[k].real)
-            else:
-                nuc.append(vj[k])
-        if kpts is None or numpy.shape(kpts) == (3,):
-            nuc = nuc[0]
-        return nuc
-get_pp_loc_part1 = get_nuc
 
 
 @mpi.parallel_call
@@ -159,7 +79,8 @@ def build(mydf, j_only=False, with_j3c=True):
 class DF(df.DF, pwdf.PWDF):
 
     build = build
-    get_nuc = get_nuc
+    get_nuc = pwdf.get_nuc
+    _int_nuc_vloc = pwdf._int_nuc_vloc
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -524,53 +445,6 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
     jobs = [(job_id, i0, i1) for job_id, (i0, i1, x) in enumerate(ij_ranges)]
     return jobs
 
-# Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
-# It is because the summation over real space images are splited by mpi.static_partition
-def _int_nuc_vloc(cell, nuccell, kpts):
-    '''Vnuc - Vloc'''
-    rcut = max(cell.rcut, nuccell.rcut)
-    Ls = cell.get_lattice_Ls(rcut=rcut)
-    expLk = numpy.asarray(numpy.exp(1j*numpy.dot(Ls, kpts.T)), order='C')
-    nkpts = len(kpts)
-
-    fakenuc = df._fake_nuc(cell)
-    fakenuc._atm, fakenuc._bas, fakenuc._env = \
-            gto.conc_env(nuccell._atm, nuccell._bas, nuccell._env,
-                         fakenuc._atm, fakenuc._bas, fakenuc._env)
-    charge = cell.atom_charges()
-    charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)
-
-    nao = cell.nao_nr()
-    #:buf = [numpy.zeros((nao,nao), order='F', dtype=numpy.complex128)
-    #:       for k in range(nkpts)]
-    buf = numpy.zeros((nkpts,8,nao,nao),
-                      dtype=numpy.complex128).transpose(0,3,2,1)
-    ints = incore._wrap_int3c(cell, fakenuc, 'cint3c2e_sph', 1, Ls, buf)
-    atm, bas, env = ints._envs[:3]
-
-    xyz = numpy.asarray(cell.atom_coords(), order='C')
-    ptr_coordL = atm[:cell.natm,PTR_COORD]
-    ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-    nuc = 0
-    for atm0, atm1 in lib.prange(0, fakenuc.natm, 8):
-        c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
-                                        cell.nbas*2+atm0, cell.nbas*2+atm1)
-
-        for l in mpi.static_partition(range(len(Ls))):
-            L1 = Ls[l]
-            env[ptr_coordL] = xyz + L1
-            exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
-            exp_Lk = numpy.asarray(exp_Lk, order='C')
-            exp_Lk[l] = .5
-            ints(exp_Lk, c_shls_slice)
-        v = buf[:,:,:,:atm1-atm0]
-        nuc += numpy.einsum('kijz,z->kij', v, charge[atm0:atm1])
-        v[:] = 0
-
-    nuc = nuc + nuc.transpose(0,2,1).conj()
-# nuc is mpi.reduced in get_nuc function
-    return nuc
-
 def is_zero(kpt):
     return abs(kpt).sum() < df.KPT_DIFF_TOL
 gamma_point = is_zero
@@ -588,8 +462,8 @@ def async_write(thread_io, fn, *args):
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
     from mpi4pyscf.pbc import df
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
-    mydf = df.MDF(cell, kpts)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
+    mydf = df.DF(cell, kpts)
 
     v = mydf.get_nuc()
     print(v.shape)

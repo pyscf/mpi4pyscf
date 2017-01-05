@@ -17,10 +17,7 @@ import scipy.linalg
 import h5py
 
 from pyscf import lib
-from pyscf.pbc import gto
-from pyscf.pbc import tools
 from pyscf.pbc.df import incore
-from pyscf.pbc.df import outcore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import mdf
 #from pyscf.pbc.df.df import fuse_auxcell_, make_modrho_basis, \
@@ -28,7 +25,7 @@ from pyscf.pbc.df import mdf
 from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, \
         estimate_eta, unique
 from pyscf.pbc.df.df_jk import zdotNN, zdotCN, zdotNC
-from pyscf.gto.mole import ANG_OF, PTR_COORD
+from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 
 from mpi4pyscf.lib import logger
@@ -36,6 +33,7 @@ from mpi4pyscf.tools import mpi
 from mpi4pyscf.pbc.df import mdf_jk
 from mpi4pyscf.pbc.df import mdf_ao2mo
 from mpi4pyscf.pbc.df import df
+from mpi4pyscf.pbc.df import pwdf
 
 comm = mpi.comm
 rank = mpi.rank
@@ -90,7 +88,8 @@ def build(mydf, j_only=False, with_j3c=True):
 class MDF(mdf.MDF, df.DF):
 
     build = build
-    get_nuc = df.get_nuc
+    get_nuc = pwdf.get_nuc
+    _int_nuc_vloc = pwdf._int_nuc_vloc
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -513,7 +512,7 @@ def async_write(thread_io, fn, *args):
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
     from mpi4pyscf.pbc import df
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
     mydf = df.MDF(cell, kpts)
 
     v = mydf.get_nuc()
