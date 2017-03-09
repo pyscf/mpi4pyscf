@@ -107,11 +107,25 @@ if __name__ == '__main__':
     auxbasis = 'weigend'
     mf = density_fit(mf, auxbasis)
     mf.with_df.gs = (5,) * 3
-    mf.with_df.approx_sr_level = 3
     dm = mf.get_init_guess()
     vj = mf.get_j(cell, dm)
-    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.69745030912447')
-    vj, vk = mf.get_jk(cell, dm)
-    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.69745030912447')
-    print(numpy.einsum('ij,ji->', vk, dm), 'ref=37.33704732444835')
-    print(numpy.einsum('ij,ji->', mf.get_hcore(cell), dm), 'ref=-75.574414055823766')
+    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.698951141791')
+    vj, vk = mf.with_df.get_jk(dm)
+    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.698951141791')
+    print(numpy.einsum('ij,ji->', vk, dm), 'ref=37.348980782463')
+
+    kpts = cell.make_kpts([2]*3)[:4]
+    from mpi4pyscf.pbc.df import MDF
+    with_df = MDF(cell, kpts)
+    with_df.auxbasis = 'weigend'
+    with_df.gs = [5] * 3
+    dms = numpy.array([dm]*len(kpts))
+    vj, vk = with_df.get_jk(dms, exxdiv=mf.exxdiv, kpts=kpts)
+    print(numpy.einsum('ij,ji->', vj[0], dms[0]), - 46.69784775484953)
+    print(numpy.einsum('ij,ji->', vj[1], dms[1]), - 46.69815612398016)
+    print(numpy.einsum('ij,ji->', vj[2], dms[2]), - 46.69526857884274)
+    print(numpy.einsum('ij,ji->', vj[3], dms[3]), - 46.69571387135913)
+    print(numpy.einsum('ij,ji->', vk[0], dms[0]), - 37.27054185436846)
+    print(numpy.einsum('ij,ji->', vk[1], dms[1]), - 37.27081050772260)
+    print(numpy.einsum('ij,ji->', vk[2], dms[2]), - 37.27081024429774)
+    print(numpy.einsum('ij,ji->', vk[3], dms[3]), - 37.27090527533854)

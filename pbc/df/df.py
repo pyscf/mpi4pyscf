@@ -17,11 +17,11 @@ import scipy.linalg
 import h5py
 
 from pyscf import lib
+from pyscf.pbc.df import incore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import df
-from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, \
-        estimate_eta, unique
-from pyscf.pbc.df.df_jk import zdotCN
+from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
+from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 
@@ -29,7 +29,7 @@ from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
 from mpi4pyscf.pbc.df import df_jk
 from mpi4pyscf.pbc.df import df_ao2mo
-from mpi4pyscf.pbc.df import pwdf
+from mpi4pyscf.pbc.df import aft
 
 comm = mpi.comm
 rank = mpi.rank
@@ -37,7 +37,7 @@ rank = mpi.rank
 
 @mpi.parallel_call
 def build(mydf, j_only=False, with_j3c=True):
-# Unlike DF and PWDF class, here MDF objects are synced once
+# Unlike DF and AFT class, here MDF objects are synced once
     if mpi.pool.size == 1:
         return df.DF.build(mydf, j_only, with_j3c)
 
@@ -48,9 +48,6 @@ def build(mydf, j_only=False, with_j3c=True):
     log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
 
     t1 = (time.clock(), time.time())
-    if mydf.eta is None:
-        mydf.eta = estimate_eta(cell)
-        log.debug('Set smooth gaussian eta to %.9g', mydf.eta)
     mydf.dump_flags()
 
     mydf.auxcell = make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
@@ -76,11 +73,11 @@ def build(mydf, j_only=False, with_j3c=True):
 
 
 @mpi.register_class
-class DF(df.DF, pwdf.PWDF):
+class DF(df.DF, aft.AFTDF):
 
     build = build
-    get_nuc = pwdf.get_nuc
-    _int_nuc_vloc = pwdf._int_nuc_vloc
+    get_nuc = aft.get_nuc
+    _int_nuc_vloc = aft._int_nuc_vloc
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -208,8 +205,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     log.debug1('pbc.df rcut=%s', rcut)
     log.debug3('Ls = %s', Ls)
 
-    def gen_int3c(auxcell, intor, job_id, ish0, ish1):
-        aux_loc = auxcell.ao_loc_nr('ssc' in intor)
+    def gen_int3c(auxcell, job_id, ish0, ish1):
+        aux_loc = auxcell.ao_loc_nr('ssc' in 'cint3c2e_sph')
         naux = aux_loc[-1]
         dataname = 'j3c-chunks/%d' % job_id
         if dataname in feri:
@@ -226,7 +223,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         buflen = max([x[2] for x in auxranges])
         buf = [numpy.zeros(dij*buflen, dtype=numpy.complex128) for k in range(nkptij)]
 
-        ints = incore._wrap_int3c(cell, auxcell, intor, 1, Ls, buf)
+        ints = incore._wrap_int3c(cell, auxcell, 'cint3c2e_sph', 1, Ls, buf)
         atm, bas, env = ints._envs[:3]
 
         for kpt_id, kptij in enumerate(kptij_lst):
@@ -267,13 +264,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 h5dat[naux0:naux0+nrow] = mat.reshape(nrow,-1)
                 mat[:] = 0
             naux0 += nrow
-        buf = mat = None
 
     if j_only:
         ccsum_fac = .5
     else:
         ccsum_fac = 1
-    def ft_fuse(job_id, uniq_kptji_id, ish0, ish1):
+    def ft_fuse(job_id, uniq_kptji_id, sh0, sh1):
         kpt = uniq_kpts[uniq_kptji_id]  # kpt = kptj - kpti
         adapted_ji_idx = numpy.where(uniq_inverse == uniq_kptji_id)[0]
         adapted_kptjs = kptjs[adapted_ji_idx]
@@ -283,8 +279,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
 
         j3cR = []
         j3cI = []
-        i0 = ao_loc[ish0]
-        i1 = ao_loc[ish1]
+        i0 = ao_loc[sh0]
+        i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
             key = 'j3c-chunks/%d/%d' % (job_id, idx)
             v = numpy.asarray(feri[key])
@@ -297,6 +293,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 j3cI.append(None)
             else:
                 j3cI.append(numpy.asarray(v.imag, order='C'))
+            v = None
 
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
@@ -306,7 +303,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         buf = numpy.zeros((nkptj,ncol*Gblksize), dtype=numpy.complex128)
         log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
 
-        shls_slice = (ish0, ish1, 0, cell.nbas)
+        shls_slice = (sh0, sh1, 0, cell.nbas)
         ni = ncol // nao
         for p0, p1 in lib.prange(0, ngs, Gblksize):
             ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, 's1', b,
@@ -342,7 +339,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     j3c_workers = numpy.zeros(len(j3c_jobs), dtype=int)
     #for job_id, ish0, ish1 in mpi.work_share_partition(j3c_jobs):
     for job_id, ish0, ish1 in mpi.work_stealing_partition(j3c_jobs):
-        gen_int3c(fused_cell, 'cint3c2e_sph', job_id, ish0, ish1)
+        gen_int3c(fused_cell, job_id, ish0, ish1)
         t2 = log.alltimer_debug2('int j3c %d' % job_id, *t2)
 
         for k, kpt in enumerate(uniq_kpts):
@@ -444,10 +441,6 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
 
     jobs = [(job_id, i0, i1) for job_id, (i0, i1, x) in enumerate(ij_ranges)]
     return jobs
-
-def is_zero(kpt):
-    return abs(kpt).sum() < df.KPT_DIFF_TOL
-gamma_point = is_zero
 
 def _sync_mydf(mydf):
     return mydf.unpack_(comm.bcast(mydf.pack()))

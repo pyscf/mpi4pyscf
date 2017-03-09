@@ -9,21 +9,21 @@ JK with analytic Fourier transformation
 
 import time
 import numpy
-from pyscf.pbc.df import pwdf_jk
+from pyscf.pbc.df import aft_jk
 from mpi4pyscf.tools import mpi
 
 comm = mpi.comm
 rank = mpi.rank
 
 
-get_j_kpts = mpi.call_then_reduce(pwdf_jk.get_j_kpts)
+get_j_kpts = mpi.call_then_reduce(aft_jk.get_j_kpts)
 
 @mpi.parallel_call
 def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)), kpt_band=None,
                exxdiv=None):
     if rank != 0:  # to apply df_jk._ewald_exxdiv_for_G0 function once
         exxdiv = None
-    vk = pwdf_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpt_band, exxdiv)
+    vk = aft_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpt_band, exxdiv)
     vk = mpi.reduce(vk)
     return vk
 
@@ -40,7 +40,7 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
     '''JK for given k-point'''
     if rank != 0:  # to apply df_jk._ewald_exxdiv_for_G0 function once
         exxdiv = None
-    vj, vk = pwdf_jk.get_jk(mydf, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
+    vj, vk = aft_jk.get_jk(mydf, dm, hermi, kpt, kpt_band, with_j, with_k, exxdiv)
 
     if with_j: vj = mpi.reduce(vj)
     if with_k: vk = mpi.reduce(vk)
@@ -50,7 +50,7 @@ def get_jk(mydf, dm, hermi=1, kpt=numpy.zeros(3),
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
     from pyscf.pbc import scf as pscf
-    from pyscf.pbc.df import pwdf
+    from mpi4pyscf.pbc.df import aft
 
     L = 5.
     n = 5
@@ -68,7 +68,7 @@ if __name__ == '__main__':
     cell.build(0,0)
     cell.verbose = 5
 
-    df = pwdf.PWDF(cell)
+    df = aft.AFTDF(cell)
     df.gs = (15,)*3
     dm = pscf.RHF(cell).get_init_guess()
     vj, vk = df.get_jk(cell, dm)

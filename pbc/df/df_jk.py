@@ -112,8 +112,25 @@ if __name__ == '__main__':
     mf.with_df.approx_sr_level = 3
     dm = mf.get_init_guess()
     vj = mf.get_j(cell, dm)
-    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.69745030912447')
+    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.698942480902062')
     vj, vk = mf.get_jk(cell, dm)
-    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.69745030912447')
-    print(numpy.einsum('ij,ji->', vk, dm), 'ref=37.33704732444835')
-    print(numpy.einsum('ij,ji->', mf.get_hcore(cell), dm), 'ref=-75.574414055823766')
+    print(numpy.einsum('ij,ji->', vj, dm), 'ref=46.698942480902062')
+    print(numpy.einsum('ij,ji->', vk, dm), 'ref=37.348163681114187')
+    print(numpy.einsum('ij,ji->', mf.get_hcore(cell), dm), 'ref=-75.5758086593503')
+
+    kpts = cell.make_kpts([2]*3)[:4]
+    from mpi4pyscf.pbc.df import DF
+    with_df = DF(cell, kpts)
+    with_df.auxbasis = 'weigend'
+    with_df.gs = [5] * 3
+    dms = numpy.array([dm]*len(kpts))
+    vj, vk = with_df.get_jk(dms, exxdiv=mf.exxdiv, kpts=kpts)
+    print(numpy.einsum('ij,ji->', vj[0], dms[0]) - 46.69784067248350)
+    print(numpy.einsum('ij,ji->', vj[1], dms[1]) - 46.69814992718212)
+    print(numpy.einsum('ij,ji->', vj[2], dms[2]) - 46.69526120279135)
+    print(numpy.einsum('ij,ji->', vj[3], dms[3]) - 46.69570739526301)
+    print(numpy.einsum('ij,ji->', vk[0], dms[0]) - 37.27020025046015)
+    print(numpy.einsum('ij,ji->', vk[1], dms[1]) - 37.27047172558580)
+    print(numpy.einsum('ij,ji->', vk[2], dms[2]) - 37.27046412080765)
+    print(numpy.einsum('ij,ji->', vk[3], dms[3]) - 37.27056060718295)
+
