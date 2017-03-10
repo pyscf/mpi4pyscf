@@ -166,13 +166,25 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 j2c[k][naux:] -= j2cR + j2cI * 1j
                 j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T.conj()
 
-        j2c[k] = scipy.linalg.cholesky(fuse(fuse(j2c[k]).T).T, lower=True)
+        j2c[k] = fuse(fuse(j2c[k]).T).T
+        try:
+            j2c[k] = ('CD', scipy.linalg.cholesky(j2c[k], lower=True))
+        except scipy.linalg.LinAlgError:
+            w, v = scipy.linalg.eigh(j2c[k])
+            log.debug2('metric linear dependency for kpt %s', k)
+            log.debug2('cond = %.4g, drop %d bfns',
+                       w[0]/w[-1], numpy.count_nonzero(w<mdf.LINEAR_DEP_THR))
+            v = v[:,w>mdf.LINEAR_DEP_THR].T.conj()
+            v /= numpy.sqrt(w[w>mdf.LINEAR_DEP_THR]).reshape(-1,1)
+            j2c[k] = ('eig', v)
+
         kLR1 *= coulG.reshape(-1,1)
         kLI1 *= coulG.reshape(-1,1)
         kLRs.append(kLR1)
         kLIs.append(kLI1)
         kLR = kLI = kLR1 = kLI1 = coulG = None
 
+    nauxs = [v[1].shape[0] for v in j2c]
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
     j_only = numpy.all(aosym_s2)
     vbar = mydf.auxbar(fused_cell)
@@ -200,9 +212,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     else:
         feri = h5py.File(mydf._cderi, 'w')
 
-    rcut = max(cell.rcut, auxcell.rcut)
-    Ls = cell.get_lattice_Ls(rcut=rcut)
-    log.debug1('pbc.df rcut=%s', rcut)
+    Ls = cell.get_lattice_Ls()
     log.debug3('Ls = %s', Ls)
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
@@ -326,14 +336,18 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                     lib.dot(kLR[p0:p1].T, pqkI.T, -ccsum_fac, j3cI[k][naux:], 1)
                     lib.dot(kLI[p0:p1].T, pqkR.T,  ccsum_fac, j3cI[k][naux:], 1)
 
+        naux0 = nauxs[uniq_kptji_id]
         for k, idx in enumerate(adapted_ji_idx):
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
                 v = fuse(j3cR[k])
             else:
                 v = fuse(j3cR[k] + j3cI[k] * 1j)
-            v = scipy.linalg.solve_triangular(j2c[uniq_kptji_id], v,
-                                              lower=True, overwrite_b=True)
-            feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux] = v
+            if j2c[uniq_kptji_id][0] == 'CD':
+                v = scipy.linalg.solve_triangular(j2c[uniq_kptji_id][1], v,
+                                                  lower=True, overwrite_b=True)
+            else:
+                v = lib.dot(j2c[uniq_kptji_id][1], v)
+            feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux0] = v
 
     t2 = t1
     j3c_workers = numpy.zeros(len(j3c_jobs), dtype=int)
@@ -353,11 +367,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     t1 = log.timer_debug1('int3c and fuse', *t1)
 
     if 'j3c' in feri: del(feri['j3c'])
-    segsize = (naux+mpi.pool.size-1) // mpi.pool.size
-    naux0 = min(naux, rank*segsize)
-    naux1 = min(naux, rank*segsize+segsize)
-    nrow = naux1 - naux0
+    segsize = (max(nauxs)+mpi.pool.size-1) // mpi.pool.size
+    naux0 = rank * segsize
     for k, kptij in enumerate(kptij_lst):
+        naux1 = min(nauxs[uniq_inverse[k]], naux0+segsize)
+        nrow = max(0, naux1-naux0)
         if gamma_point(kptij):
             dtype = 'f8'
         else:
@@ -375,7 +389,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     segs_loc = numpy.append(0, numpy.cumsum(dims))
     segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
     def load(k, p0, p1):
-        slices = [(min(i*segsize+p0,naux), min(i*segsize+p1, naux))
+        naux1 = nauxs[uniq_inverse[k]]
+        slices = [(min(i*segsize+p0,naux1), min(i*segsize+p1,naux1))
                   for i in range(mpi.pool.size)]
         segs = []
         for p0, p1 in slices:
@@ -392,7 +407,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
 
     def save(k, p0, p1, segs):
         segs = mpi.alltoall(segs)
-        loc0, loc1 = min(p0, naux-naux0), min(p1, naux-naux0)
+        naux1 = nauxs[uniq_inverse[k]]
+        loc0, loc1 = min(p0, naux1-naux0), min(p1, naux1-naux0)
         nL = loc1 - loc0
         if nL > 0:
             segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
@@ -422,7 +438,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             segs = load(k, p0, p1)
             write_handler = async_write(write_handler, save, k, p0, p1, segs)
             segs = None
-            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' % (k, p0, p1, nrow), *t2)
+            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
+                                  (k, p0, p1, segsize), *t2)
     if write_handler is not None:
         write_handler.join()
     write_handler = None

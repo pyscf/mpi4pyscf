@@ -197,9 +197,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     else:
         feri = h5py.File(mydf._cderi, 'w')
 
-    rcut = max(cell.rcut, auxcell.rcut)
-    Ls = cell.get_lattice_Ls(rcut=rcut)
-    log.debug1('pbc.mdf rcut=%s', rcut)
+    Ls = cell.get_lattice_Ls()
     log.debug3('Ls = %s', Ls)
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
