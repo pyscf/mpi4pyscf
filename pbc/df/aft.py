@@ -149,7 +149,7 @@ class AFTDF(aft.AFTDF):
     get_nuc = get_nuc
     get_pp = get_pp
 
-    def get_jk(self, dm, hermi=1, kpts=None, kpt_band=None,
+    def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
                with_j=True, with_k=True, exxdiv='ewald'):
         '''Gamma-point calculation by default'''
         if kpts is None:
@@ -161,14 +161,14 @@ class AFTDF(aft.AFTDF):
             kpts = numpy.asarray(kpts)
 
         if kpts.shape == (3,):
-            return aft_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
+            return aft_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
                                   with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = aft_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
+            vk = aft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
         if with_j:
-            vj = aft_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
+            vj = aft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
 

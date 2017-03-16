@@ -57,10 +57,10 @@ get_j_kpts = mpi.call_then_reduce(df_jk.get_j_kpts)
 
 @mpi.parallel_call
 def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
-               kpt_band=None, exxdiv=None):
+               kpts_band=None, exxdiv=None):
     if rank != 0:  # to apply df_jk._ewald_exxdiv_for_G0 function once
         exxdiv = None
-    vk = df_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpt_band, exxdiv)
+    vk = df_jk.get_k_kpts(mydf, dm_kpts, hermi, kpts, kpts_band, exxdiv)
     vk = mpi.reduce(vk)
     return vk
 

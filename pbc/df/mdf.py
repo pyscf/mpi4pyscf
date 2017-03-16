@@ -35,76 +35,6 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-@mpi.parallel_call
-def build(mydf, j_only=False, with_j3c=True):
-# Unlike DF and AFTDF class, here MDF objects are synced once
-    if mpi.pool.size == 1:
-        return mdf.MDF.build(mydf, j_only, with_j3c)
-
-    mydf = _sync_mydf(mydf)
-    cell = mydf.cell
-    log = logger.Logger(mydf.stdout, mydf.verbose)
-    info = rank, platform.node(), platform.os.getpid()
-    log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
-
-    t1 = (time.clock(), time.time())
-    mydf.dump_flags()
-
-    mydf.auxcell = make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
-
-    mydf._j_only = j_only
-    if j_only:
-        kptij_lst = numpy.hstack((mydf.kpts,mydf.kpts)).reshape(-1,2,3)
-    else:
-        kptij_lst = [(ki, mydf.kpts[j])
-                     for i, ki in enumerate(mydf.kpts) for j in range(i+1)]
-        kptij_lst = numpy.asarray(kptij_lst)
-
-    if not isinstance(mydf._cderi, str):
-        if isinstance(mydf._cderi_file, str):
-            mydf._cderi = mydf._cderi_file
-        else:
-            mydf._cderi = mydf._cderi_file.name
-
-    if with_j3c:
-        _make_j3c(mydf, cell, mydf.auxcell, kptij_lst)
-        t1 = log.timer_debug1('j3c', *t1)
-    return mydf
-
-
-@mpi.register_class
-class MDF(mdf.MDF, df.DF):
-
-    build = build
-    get_nuc = aft.get_nuc
-    _int_nuc_vloc = aft._int_nuc_vloc
-
-    def get_jk(self, dm, hermi=1, kpts=None, kpt_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
-        if kpts is None:
-            if numpy.all(self.kpts == 0):
-                # Gamma-point calculation by default
-                kpts = numpy.zeros(3)
-            else:
-                kpts = self.kpts
-        else:
-            kpts = numpy.asarray(kpts)
-
-        if kpts.shape == (3,):
-            return mdf_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
-                                 with_k, exxdiv)
-
-        vj = vk = None
-        if with_k:
-            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
-        if with_j:
-            vj = mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
-        return vj, vk
-
-    get_eri = get_ao_eri = mdf_ao2mo.get_eri
-    ao2mo = get_mo_eri = mdf_ao2mo.general
-
-
 def _make_j3c(mydf, cell, auxcell, kptij_lst):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = t0 = (time.clock(), time.time())
@@ -434,6 +364,40 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     feri['j3c-kptij'] = kptij_lst
     t1 = log.alltimer_debug1('assembling j3c', *t1)
     feri.close()
+
+
+@mpi.register_class
+class MDF(mdf.MDF, df.DF):
+
+    _make_j3c = _make_j3c
+
+    get_nuc = aft.get_nuc
+    _int_nuc_vloc = aft._int_nuc_vloc
+
+    def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
+               with_j=True, with_k=True, exxdiv='ewald'):
+        if kpts is None:
+            if numpy.all(self.kpts == 0):
+                # Gamma-point calculation by default
+                kpts = numpy.zeros(3)
+            else:
+                kpts = self.kpts
+        else:
+            kpts = numpy.asarray(kpts)
+
+        if kpts.shape == (3,):
+            return mdf_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                 with_k, exxdiv)
+
+        vj = vk = None
+        if with_k:
+            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+        if with_j:
+            vj = mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+        return vj, vk
+
+    get_eri = get_ao_eri = mdf_ao2mo.get_eri
+    ao2mo = get_mo_eri = mdf_ao2mo.general
 
 def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
     ao_loc = cell.ao_loc_nr()

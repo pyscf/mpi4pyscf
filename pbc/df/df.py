@@ -36,10 +36,10 @@ rank = mpi.rank
 
 
 @mpi.parallel_call
-def build(mydf, j_only=False, with_j3c=True):
+def build(mydf, j_only=False, with_j3c=True, kpts_band=None):
 # Unlike DF and AFT class, here MDF objects are synced once
     if mpi.pool.size == 1:
-        return df.DF.build(mydf, j_only, with_j3c)
+        return df.DF.build(mydf, j_only, with_j3c, kpts_band)
 
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
@@ -48,16 +48,28 @@ def build(mydf, j_only=False, with_j3c=True):
     log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
 
     t1 = (time.clock(), time.time())
+    if mydf.kpts_band is not None:
+        mydf.kpts_band = mydf.kpts_band.reshape(-1,3)
+    if kpts_band is not None:
+        kpts_band = kpts_band.reshape(-1,3)
+        if mydf.kpts_band is None:
+            mydf.kpts_band = kpts_band
+        else:
+            mydf.kpts_band = unique(numpy.vstack((mydf.kpts_band,kpts_band)))[0]
+
     mydf.dump_flags()
 
     mydf.auxcell = make_modrho_basis(cell, mydf.auxbasis, mydf.eta)
 
+    if mydf.kpts_band is None:
+        kpts = unique(mydf.kpts)[0]
+    else:
+        kpts = unique(numpy.vstack((mydf.kpts,mydf.kpts_band)))[0]
     mydf._j_only = j_only
     if j_only:
-        kptij_lst = numpy.hstack((mydf.kpts,mydf.kpts)).reshape(-1,2,3)
+        kptij_lst = numpy.hstack((kpts,kpts)).reshape(-1,2,3)
     else:
-        kptij_lst = [(ki, mydf.kpts[j])
-                     for i, ki in enumerate(mydf.kpts) for j in range(i+1)]
+        kptij_lst = [(ki, kpts[j]) for i, ki in enumerate(kpts) for j in range(i+1)]
         kptij_lst = numpy.asarray(kptij_lst)
 
     if not isinstance(mydf._cderi, str):
@@ -67,54 +79,9 @@ def build(mydf, j_only=False, with_j3c=True):
             mydf._cderi = mydf._cderi_file.name
 
     if with_j3c:
-        _make_j3c(mydf, cell, mydf.auxcell, kptij_lst)
+        mydf._make_j3c(cell, mydf.auxcell, kptij_lst)
         t1 = log.timer_debug1('j3c', *t1)
     return mydf
-
-
-@mpi.register_class
-class DF(df.DF, aft.AFTDF):
-
-    build = build
-    get_nuc = aft.get_nuc
-    _int_nuc_vloc = aft._int_nuc_vloc
-
-    def pack(self):
-        return {'verbose'   : self.verbose,
-                'max_memory': self.max_memory,
-                'kpts'      : self.kpts,
-                'gs'        : self.gs,
-                'eta'       : self.eta,
-                'blockdim'  : self.blockdim,
-                'auxbasis'  : self.auxbasis}
-    def unpack_(self, dfdic):
-        self.__dict__.update(dfdic)
-        return self
-
-    def get_jk(self, dm, hermi=1, kpts=None, kpt_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
-        if kpts is None:
-            if numpy.all(self.kpts == 0):
-                # Gamma-point calculation by default
-                kpts = numpy.zeros(3)
-            else:
-                kpts = self.kpts
-        else:
-            kpts = numpy.asarray(kpts)
-
-        if kpts.shape == (3,):
-            return df_jk.get_jk(self, dm, hermi, kpts, kpt_band, with_j,
-                                with_k, exxdiv)
-
-        vj = vk = None
-        if with_k:
-            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpt_band, exxdiv)
-        if with_j:
-            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpt_band)
-        return vj, vk
-
-    get_eri = get_ao_eri = df_ao2mo.get_eri
-    ao2mo = get_mo_eri = df_ao2mo.general
 
 
 def _make_j3c(mydf, cell, auxcell, kptij_lst):
@@ -449,6 +416,54 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     feri['j3c-kptij'] = kptij_lst
     t1 = log.alltimer_debug1('assembling j3c', *t1)
     feri.close()
+
+
+@mpi.register_class
+class DF(df.DF, aft.AFTDF):
+
+    build = build
+    _make_j3c = _make_j3c
+
+    get_nuc = aft.get_nuc
+    _int_nuc_vloc = aft._int_nuc_vloc
+
+    def pack(self):
+        return {'verbose'   : self.verbose,
+                'max_memory': self.max_memory,
+                'kpts'      : self.kpts,
+                'kpts_band' : self.kpts_band,
+                'gs'        : self.gs,
+                'eta'       : self.eta,
+                'blockdim'  : self.blockdim,
+                'auxbasis'  : self.auxbasis}
+    def unpack_(self, dfdic):
+        self.__dict__.update(dfdic)
+        return self
+
+    def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
+               with_j=True, with_k=True, exxdiv='ewald'):
+        if kpts is None:
+            if numpy.all(self.kpts == 0):
+                # Gamma-point calculation by default
+                kpts = numpy.zeros(3)
+            else:
+                kpts = self.kpts
+        else:
+            kpts = numpy.asarray(kpts)
+
+        if kpts.shape == (3,):
+            return df_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                with_k, exxdiv)
+
+        vj = vk = None
+        if with_k:
+            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+        if with_j:
+            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+        return vj, vk
+
+    get_eri = get_ao_eri = df_ao2mo.get_eri
+    ao2mo = get_mo_eri = df_ao2mo.general
 
 def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks):
     ao_loc = cell.ao_loc_nr()
