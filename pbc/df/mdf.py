@@ -88,9 +88,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             w, v = scipy.linalg.eigh(j2c[k])
             log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
-                       w[0]/w[-1], numpy.count_nonzero(w<mdf.LINEAR_DEP_THR))
-            v = v[:,w>mdf.LINEAR_DEP_THR].T.conj()
-            v /= numpy.sqrt(w[w>mdf.LINEAR_DEP_THR]).reshape(-1,1)
+                       w[0]/w[-1], numpy.count_nonzero(w<mdf.df.LINEAR_DEP_THR))
+            v = v[:,w>mdf.df.LINEAR_DEP_THR].T.conj()
+            v /= numpy.sqrt(w[w>mdf.df.LINEAR_DEP_THR]).reshape(-1,1)
             j2c[k] = ('eig', v)
 
         kLR *= coulG.reshape(-1,1)

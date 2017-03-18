@@ -27,8 +27,7 @@ cell.basis = 'sto3g'
 cell.gs = [5] * 3
 cell.verbose = 4
 cell.build()
-cell.nimgs = [2]*3
-cell.max_memory = 1
+#cell.max_memory = 1
 
 mydf = mpidf.MDF(cell)
 mydf.auxbasis = 'weigend'

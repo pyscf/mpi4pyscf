@@ -49,9 +49,9 @@ def build(mydf, j_only=False, with_j3c=True, kpts_band=None):
 
     t1 = (time.clock(), time.time())
     if mydf.kpts_band is not None:
-        mydf.kpts_band = mydf.kpts_band.reshape(-1,3)
+        mydf.kpts_band = numpy.reshape(mydf.kpts_band, (-1,3))
     if kpts_band is not None:
-        kpts_band = kpts_band.reshape(-1,3)
+        kpts_band = numpy.reshape(kpts_band, (-1,3))
         if mydf.kpts_band is None:
             mydf.kpts_band = kpts_band
         else:
@@ -140,9 +140,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
             w, v = scipy.linalg.eigh(j2c[k])
             log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
-                       w[0]/w[-1], numpy.count_nonzero(w<mdf.LINEAR_DEP_THR))
-            v = v[:,w>mdf.LINEAR_DEP_THR].T.conj()
-            v /= numpy.sqrt(w[w>mdf.LINEAR_DEP_THR]).reshape(-1,1)
+                       w[0]/w[-1], numpy.count_nonzero(w<df.LINEAR_DEP_THR))
+            v = v[:,w>df.LINEAR_DEP_THR].T.conj()
+            v /= numpy.sqrt(w[w>df.LINEAR_DEP_THR]).reshape(-1,1)
             j2c[k] = ('eig', v)
 
         kLR1 *= coulG.reshape(-1,1)
