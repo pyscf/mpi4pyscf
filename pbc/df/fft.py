@@ -38,7 +38,7 @@ def get_nuc(mydf, kpts):
         kpts_lst = numpy.zeros((1,3))
     else:
         kpts_lst = numpy.reshape(kpts, (-1,3))
-    if abs(kpts_lst).sum < 1e-9:
+    if abs(kpts_lst).sum() < 1e-9:  # gamma_point
         dtype = numpy.float64
     else:
         dtype = numpy.complex128

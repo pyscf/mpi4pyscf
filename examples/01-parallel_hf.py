@@ -27,12 +27,10 @@ cell.basis = 'sto3g'
 cell.gs = [5] * 3
 cell.verbose = 4
 cell.build()
-#cell.max_memory = 1
+cell.max_memory = 1
 
 mydf = mpidf.MDF(cell)
 mydf.auxbasis = 'weigend'
-mydf.metric = 'T'
-mydf.approx_sr_level = 0
 
 mf = pscf.RHF(cell)
 mf.exxdiv = 'ewald'
