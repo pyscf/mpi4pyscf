@@ -57,61 +57,6 @@ def get_pp(mydf, kpts=None):
             vpp = vpp[0]
         return vpp
 
-## Note on each proccessor, _int_nuc_vloc computes only a fraction of the entire vj.
-## It is because the summation over real space images are splited by mpi.static_partition
-#def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
-#    '''Vnuc - Vloc'''
-#    cell = mydf.cell
-#    rcut = max(cell.rcut, nuccell.rcut)
-#    Ls = cell.get_lattice_Ls(rcut=rcut)
-#    expLk = numpy.asarray(numpy.exp(1j*numpy.dot(Ls, kpts.T)), order='C')
-#    nkpts = len(kpts)
-#
-#    fakenuc = aft._fake_nuc(cell)
-#    fakenuc._atm, fakenuc._bas, fakenuc._env = \
-#            gto.conc_env(nuccell._atm, nuccell._bas, nuccell._env,
-#                         fakenuc._atm, fakenuc._bas, fakenuc._env)
-#    charge = cell.atom_charges()
-#    charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)
-#
-#    nao = cell.nao_nr()
-#    #:buf = [numpy.zeros((nao,nao), order='F', dtype=numpy.complex128)
-#    #:       for k in range(nkpts)]
-#    buf = numpy.zeros((nkpts,8,nao,nao),
-#                      dtype=numpy.complex128).transpose(0,3,2,1)
-#    ints = incore._wrap_int3c(cell, fakenuc, intor, 1, Ls, buf)
-#    atm, bas, env = ints._envs[:3]
-#
-#    xyz = numpy.asarray(cell.atom_coords(), order='C')
-#    ptr_coordL = atm[:cell.natm,PTR_COORD]
-#    ptr_coordL = numpy.vstack((ptr_coordL,ptr_coordL+1,ptr_coordL+2)).T.copy('C')
-#    nuc = 0
-#    for atm0, atm1 in lib.prange(0, fakenuc.natm, 8):
-#        c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
-#                                        cell.nbas*2+atm0, cell.nbas*2+atm1)
-#
-#        for l in mpi.static_partition(range(len(Ls))):
-#            L1 = Ls[l]
-#            env[ptr_coordL] = xyz + L1
-#            exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
-#            exp_Lk = numpy.asarray(exp_Lk, order='C')
-#            exp_Lk[l] = .5
-#            ints(exp_Lk, c_shls_slice)
-#        v = buf[:,:,:,:atm1-atm0]
-#        nuc += numpy.einsum('kijz,z->kij', v, charge[atm0:atm1])
-#        v[:] = 0
-#
-#    nuc = nuc + nuc.transpose(0,2,1).conj()
-#    nuc = lib.pack_tril(nuc)
-## nuc is mpi.reduced in get_nuc function
-#    if rank == 0 and cell.dimension == 3:
-#        nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(cell.atom_charges())])
-#        nucbar *= numpy.pi/cell.vol
-#        ovlp = cell.pbc_intor('cint1e_ovlp_sph', 1, lib.HERMITIAN, kpts)
-#        for k in range(nkpts):
-#            s = lib.pack_tril(ovlp[k])
-#            nuc[k] += nucbar * s
-#    return nuc
 def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
     '''Vnuc - Vloc'''
     cell = mydf.cell

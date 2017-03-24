@@ -16,9 +16,9 @@ import scipy.linalg
 import h5py
 
 from pyscf import lib
-from pyscf.pbc.df import incore
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import mdf
+from pyscf.pbc.df.incore import wrap_int3c
 from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
 from pyscf.gto.mole import PTR_COORD
@@ -133,7 +133,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                max_memory, mem_now, chunks)
     log.debug2('j3c_jobs %s', j3c_jobs)
 
-    int3c = incore.wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's2', 1, kptij_lst)
+    if j_only:
+        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's2', 1, kptij_lst)
+    else:
+        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's1', 1, kptij_lst)
+        idxb = numpy.tril_indices(nao)
+        idxb = (idxb[0] * nao + idxb[1]).astype('i')
     aux_loc = fused_cell.ao_loc_nr('ssc' in 'cint3c2e_sph')
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
@@ -141,38 +146,53 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         if dataname in feri:
             del(feri[dataname])
 
+        i0 = ao_loc[ish0]
+        i1 = ao_loc[ish1]
+        dii = i1*(i1+1)//2 - i0*(i0+1)//2
+        dij = (i1 - i0) * nao
         if j_only:
-            dij = (ao_loc[ish1]*(ao_loc[ish1]+1)//2 -
-                   ao_loc[ish0]*(ao_loc[ish0]+1)//2)
+            buflen = max(8, int(max_memory*1e6/16/(nkptij*dii+dii)))
         else:
-            dij = (ao_loc[ish1] - ao_loc[ish0]) * nao
-        buflen = max(8, int(max_memory*1e6/16/(nkptij*dij)))
+            buflen = max(8, int(max_memory*1e6/16/(nkptij*dij+dij)))
         auxranges = balance_segs(aux_loc[1:]-aux_loc[:-1], buflen)
         buflen = max([x[2] for x in auxranges])
         buf = numpy.empty(nkptij*dij*buflen, dtype=dtype)
+        buf1 = numpy.empty(dij*buflen, dtype=dtype)
 
         naux = aux_loc[-1]
         for kpt_id, kptij in enumerate(kptij_lst):
             key = '%s/%d' % (dataname, kpt_id)
-            if gamma_point(kptij):
-                feri.create_dataset(key, (naux, dij), 'f8')
+            if aosym_s2[kpt_id]:
+                shape = (naux, dii)
             else:
-                feri.create_dataset(key, (naux, dij), 'c16')
+                shape = (naux, dij)
+            if gamma_point(kptij):
+                feri.create_dataset(key, shape, 'f8')
+            else:
+                feri.create_dataset(key, shape, 'c16')
 
         naux0 = 0
         for istep, auxrange in enumerate(auxranges):
             log.alldebug2("aux_e2 job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             sub_slice = (ish0, ish1, 0, cell.nbas, sh0, sh1)
-            mat = numpy.ndarray((nkptij,dij,nrow), dtype=dtype, buffer=buf)
+            if j_only:
+                mat = numpy.ndarray((nkptij,dii,nrow), dtype=dtype, buffer=buf)
+            else:
+                mat = numpy.ndarray((nkptij,dij,nrow), dtype=dtype, buffer=buf)
             mat = int3c(sub_slice, mat)
 
             for k, kptij in enumerate(kptij_lst):
                 h5dat = feri['%s/%d'%(dataname,k)]
+                v = lib.transpose(mat[k], out=buf1)
+                if not j_only and aosym_s2[k]:
+                    idy = idxb[i0*(i0+1)//2:i1*(i1+1)//2] - i0 * nao
+                    out = numpy.ndarray((nrow,dii), dtype=v.dtype, buffer=mat[k])
+                    v = numpy.take(v, idy, axis=1, out=out)
                 if gamma_point(kptij):
-                    h5dat[naux0:naux0+nrow] = mat[k].T.real
+                    h5dat[naux0:naux0+nrow] = v.real
                 else:
-                    h5dat[naux0:naux0+nrow] = mat[k].T
+                    h5dat[naux0:naux0+nrow] = v
             naux0 += nrow
 
     def ft_fuse(job_id, uniq_kptji_id, sh0, sh1):
@@ -190,8 +210,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         j2ctag = j2ctags[uniq_kptji_id]
         naux0 = j2c.shape[0]
 
-        j3cR = []
-        j3cI = []
+        if is_zero(kpt):
+            aosym = 's2'
+        else:
+            aosym = 's1'
+
+        j3cR = [None] * nkptj
+        j3cI = [None] * nkptj
         i0 = ao_loc[sh0]
         i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
@@ -201,11 +226,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
                 for i, c in enumerate(vbar):
                     if c != 0:
                         v[i] -= c * ovlp[k][i0*(i0+1)//2:i1*(i1+1)//2].ravel()
-            j3cR.append(numpy.asarray(v.real, order='C'))
-            if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
-                j3cI.append(None)
-            else:
-                j3cI.append(numpy.asarray(v.imag, order='C'))
+            j3cR[k] = numpy.asarray(v.real, order='C')
+            if v.dtype == numpy.complex128:
+                j3cI[k] = numpy.asarray(v.imag, order='C')
             v = None
 
         ncol = j3cR[0].shape[1]
@@ -215,11 +238,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
         pqkIbuf = numpy.empty(ncol*Gblksize)
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
         log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
-
-        if aosym_s2[uniq_kptji_id]:
-            aosym = 's2'
-        else:
-            aosym = 's1'
 
         shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngs, Gblksize):
