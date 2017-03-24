@@ -31,7 +31,7 @@ cell.gs = [7]*3
 cell.verbose = 5
 cell.build()
 
-kpts = pyscf_ase.make_kpts(cell, [4]*3)
+kpts = cell.make_kpts([4]*3)
 mf = pscf.KRHF(cell, kpts)
 
 #
