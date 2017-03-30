@@ -68,10 +68,14 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
                          fakenuc._atm, fakenuc._bas, fakenuc._env)
 
     kptij_lst = numpy.hstack((kpts,kpts)).reshape(-1,2,3)
-    shranges = [(i0,i1) for i0, i1 in lib.tril_equal_pace(cell.nbas, 0, mpi.pool.size)]
-    ish0, ish1 = shranges[rank]
-    buf = incore.aux_e2(cell, fakenuc, intor, aosym='s2', kptij_lst=kptij_lst,
-                        shls_slice=(ish0,ish1,0,cell.nbas,0,fakenuc.nbas))
+    ishs = mpi.work_balanced_partition(numpy.arange(cell.nbas),
+                                       costs=numpy.arange(1, cell.nbas+1))
+    if len(ishs) > 0:
+        ish0, ish1 = ishs[0], ishs[-1]+1
+        buf = incore.aux_e2(cell, fakenuc, intor, aosym='s2', kptij_lst=kptij_lst,
+                            shls_slice=(ish0,ish1,0,cell.nbas,0,fakenuc.nbas))
+    else:
+        buf = numpy.zeros(0)
 
     charge = cell.atom_charges()
     charge = numpy.append(charge, -charge)  # (charge-of-nuccell, charge-of-fakenuc)

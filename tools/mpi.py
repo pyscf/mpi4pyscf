@@ -8,6 +8,7 @@ import numpy
 from mpi4py import MPI
 from . import mpi_pool
 from .mpi_pool import MPIPool
+from pyscf import lib
 
 _registry = {}
 
@@ -29,17 +30,14 @@ def static_partition(tasks):
 
 def work_balanced_partition(tasks, costs=None):
     if costs is None:
-        costs = numpy.ones(tasks)
+        costs = numpy.ones(len(tasks))
     if rank == 0:
-        segsize = float(sum(costs)) / pool.size
-        loads = []
-        cum_costs = numpy.cumsum(costs)
-        start_id = 0
-        for k in range(pool.size):
-            stop_id = numpy.argmin(abs(cum_costs - (k+1)*segsize)) + 1
-            stop_id = max(stop_id, start_id+1)
-            loads.append([start_id,stop_id])
-            start_id = stop_id
+        cum = numpy.append(0, numpy.cumsum(costs))
+        segsize = float(cum[-1]) / (pool.size-.5)
+        displs = lib.misc._blocksize_partition(cum, segsize)
+        if len(displs) != pool.size+1:
+            displs = lib.misc._balanced_partition(cum, pool.size)
+        loads = list(zip(displs[:-1], displs[1:]))
         comm.bcast(loads)
     else:
         loads = comm.bcast(None)
