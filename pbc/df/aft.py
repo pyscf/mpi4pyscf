@@ -15,7 +15,6 @@ from pyscf import gto
 from pyscf.pbc.df import incore
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import aft
-from pyscf.gto.mole import PTR_COORD
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -144,7 +143,7 @@ class AFTDF(aft.AFTDF):
 
         if kpts.shape == (3,):
             return aft_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
-                                  with_k, exxdiv)
+                                 with_k, exxdiv)
 
         vj = vk = None
         if with_k:

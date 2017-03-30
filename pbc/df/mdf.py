@@ -4,7 +4,7 @@
 #
 
 '''
-Exact density fitting with Gaussian and planewaves
+Mixed density fitting with Gaussian and planewaves
 Ref:
 '''
 

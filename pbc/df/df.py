@@ -3,11 +3,6 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
-'''
-Exact density fitting with Gaussian and planewaves
-Ref:
-'''
-
 import time
 import platform
 import ctypes
@@ -35,7 +30,7 @@ rank = mpi.rank
 
 
 @mpi.parallel_call
-def build(mydf, j_only=False, with_j3c=True, kpts_band=None):
+def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
 # Unlike DF and AFT class, here MDF objects are synced once
     if mpi.pool.size == 1:
         return df.DF.build(mydf, j_only, with_j3c, kpts_band)
@@ -66,7 +61,8 @@ def build(mydf, j_only=False, with_j3c=True, kpts_band=None):
     else:
         kpts = mydf.kpts
         kband_uniq = [k for k in mydf.kpts_band if len(member(k, kpts))==0]
-    mydf._j_only = j_only
+    if j_only is None:
+        j_only = mydf._j_only
     if j_only:
         kall = numpy.vstack([kpts,kband_uniq])
         kptij_lst = numpy.hstack((kall,kall)).reshape(-1,2,3)

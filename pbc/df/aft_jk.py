@@ -7,7 +7,6 @@
 JK with analytic Fourier transformation
 '''
 
-import time
 import numpy
 from pyscf.pbc.df import aft_jk
 from mpi4pyscf.tools import mpi
