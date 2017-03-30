@@ -45,5 +45,5 @@ print(mf.scf())
 # Similar replacement can be placed on MDF module
 #
 mf.with_df = df.MDF(cell, kpts)
-print mf.scf()
+print(mf.scf())
 

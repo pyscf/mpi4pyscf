@@ -194,7 +194,7 @@ class FFTDF(fft.FFTDF):
             ni.non0tab = ni.make_mask(cell, coords)
         if kpts_band is None:
             aoR = ni.eval_ao(cell, coords, kpts, non0tab=ni.non0tab)
-            for k in mpi.static_partition(range(len(kpts))):
+            for k in mpi.static_partition(list(range(len(kpts)))):
                 yield k, aoR[k]
         else:
             aoR = ni.eval_ao(cell, coords, kpts_band, non0tab=ni.non0tab)
@@ -204,7 +204,7 @@ class FFTDF(fft.FFTDF):
                 else:
                     return
             else:
-                for k in mpi.static_partition(range(len(kpts_band))):
+                for k in mpi.static_partition(list(range(len(kpts_band)))):
                     yield k, aoR[k]
 
     get_pp = get_pp

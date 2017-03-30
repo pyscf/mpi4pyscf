@@ -161,7 +161,11 @@ class _close_pool_message(object):
 class _function_wrapper(object):
     def __init__(self, function):
         #print(function.__closure__)
-        self.func_code = marshal.dumps(function.func_code)
+        if sys.version_info >= (3, 0):
+            code = function.__code__
+        else:
+            code = function.func_code
+        self.func_code = marshal.dumps(code)
 
 def _error_function(task):
     raise RuntimeError("Pool was sent tasks before being told what "
