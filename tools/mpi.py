@@ -29,7 +29,7 @@ def static_partition(tasks):
 
 def work_balanced_partition(tasks, costs=None):
     if costs is None:
-        costs = numpy.ones(tasks)
+        costs = numpy.ones(len(tasks))
     if rank == 0:
         segsize = float(sum(costs)) / pool.size
         loads = []
