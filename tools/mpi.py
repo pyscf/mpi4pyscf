@@ -196,13 +196,14 @@ def gather(sendbuf, root=0):
 #            return sendbuf
 
     sendbuf = numpy.asarray(sendbuf, order='C')
-    mpi_dtype = sendbuf.dtype.char
+    mpi_dtype = numpy.result_type(*comm.allgather(sendbuf.dtype.char)).char
+    _assert(sendbuf.dtype.char == mpi_dtype or sendbuf.size == 0)
     if rank == root:
         size_dtype = comm.gather((sendbuf.size, mpi_dtype), root=root)
         _assert(all(x[1] == mpi_dtype for x in size_dtype if x[0] > 0))
         counts = numpy.array([x[0] for x in size_dtype])
         displs = numpy.append(0, numpy.cumsum(counts[:-1]))
-        recvbuf = numpy.empty(sum(counts), dtype=sendbuf.dtype)
+        recvbuf = numpy.empty(sum(counts), dtype=mpi_dtype)
         comm.Gatherv([sendbuf.ravel(), mpi_dtype],
                      [recvbuf.ravel(), counts, displs, mpi_dtype], root)
         return recvbuf.reshape((-1,) + sendbuf[0].shape)
@@ -213,13 +214,15 @@ def gather(sendbuf, root=0):
 
 def allgather(sendbuf):
     sendbuf = numpy.asarray(sendbuf, order='C')
-    shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
+    attr = comm.allgather((sendbuf.size, sendbuf.dtype.char))
+    counts = [x[0] for x in attr]
+    mpi_dtype = numpy.result_type(*[x[1] for x in attr]).char
     _assert(sendbuf.dtype.char == mpi_dtype or sendbuf.size == 0)
-    counts = numpy.array(comm.allgather(sendbuf.size))
     displs = numpy.append(0, numpy.cumsum(counts[:-1]))
-    recvbuf = numpy.empty(sum(counts), dtype=sendbuf.dtype)
+    recvbuf = numpy.empty(sum(counts), dtype=mpi_dtype)
     comm.Allgatherv([sendbuf.ravel(), mpi_dtype],
                     [recvbuf.ravel(), counts, displs, mpi_dtype])
+    shape = comm.bcast(sendbuf.shape)
     return recvbuf.reshape((-1,) + shape[1:])
 
 def alltoall(sendbuf, split_recvbuf=False):
