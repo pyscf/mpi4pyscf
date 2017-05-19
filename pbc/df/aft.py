@@ -90,7 +90,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
         c_shls_slice = (ctypes.c_int*6)(0, cell.nbas, cell.nbas, cell.nbas*2,
                                         cell.nbas*2+atm0, cell.nbas*2+atm1)
 
-        for l in mpi.static_partition(range(len(Ls))):
+        for l in mpi.static_partition(list(range(len(Ls)))):
             L1 = Ls[l]
             env[ptr_coordL] = xyz + L1
             exp_Lk = numpy.einsum('k,ik->ik', expLk[l].conj(), expLk[:l+1])
