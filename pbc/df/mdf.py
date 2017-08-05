@@ -35,7 +35,7 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-def _make_j3c(mydf, cell, auxcell, kptij_lst):
+def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = t0 = (time.clock(), time.time())
 
@@ -62,10 +62,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
 
-    if h5py.is_hdf5(mydf._cderi):
-        feri = h5py.File(mydf._cderi)
+    if h5py.is_hdf5(cderi_file):
+        feri = h5py.File(cderi_file)
     else:
-        feri = h5py.File(mydf._cderi, 'w')
+        feri = h5py.File(cderi_file, 'w')
     for k, kpt in enumerate(uniq_kpts):
         aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         aoaux = fuse(aoaux)

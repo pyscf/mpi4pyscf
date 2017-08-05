@@ -72,19 +72,21 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
         kptij_lst.extend([(ki, ki) for ki in kband_uniq])
         kptij_lst = numpy.asarray(kptij_lst)
 
-    if not isinstance(mydf._cderi, str):
-        if isinstance(mydf._cderi_file, str):
-            mydf._cderi = mydf._cderi_file
-        else:
-            mydf._cderi = mydf._cderi_file.name
-
     if with_j3c:
-        mydf._make_j3c(cell, mydf.auxcell, kptij_lst)
+        if isinstance(self._cderi_to_save, str):
+            cderi = self._cderi_to_save
+        else:
+            cderi = self._cderi_to_save.name
+        if isinstance(self._cderi, str):
+            log.warn('Value of _cderi is ignored. DF integrals will be '
+                     'saved in file %s .', cderi)
+        self._cderi = cderi
+        mydf._make_j3c(cell, mydf.auxcell, kptij_lst, cderi)
         t1 = log.timer_debug1('j3c', *t1)
     return mydf
 
 
-def _make_j3c(mydf, cell, auxcell, kptij_lst):
+def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     t1 = t0 = (time.clock(), time.time())
 
@@ -111,10 +113,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst):
     nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
 
-    if h5py.is_hdf5(mydf._cderi):
-        feri = h5py.File(mydf._cderi)
+    if h5py.is_hdf5(cderi_file):
+        feri = h5py.File(cderi_file)
     else:
-        feri = h5py.File(mydf._cderi, 'w')
+        feri = h5py.File(cderi_file, 'w')
     for k, kpt in enumerate(uniq_kpts):
         aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
@@ -438,6 +440,9 @@ class DF(df.DF, aft.AFTDF):
 
     get_nuc = aft.get_nuc
     _int_nuc_vloc = aft._int_nuc_vloc
+
+    def dump_flags(self):
+        return df.DF.dump_flags(logger.Logger(self.stdout, self.verbose))
 
     def pack(self):
         return {'verbose'   : self.verbose,
