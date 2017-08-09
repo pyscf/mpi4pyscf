@@ -10,6 +10,7 @@ __all__ = ["MPIPool", "MPIPoolException"]
 
 import os
 import sys
+import types
 import imp
 import importlib
 import types
@@ -107,7 +108,13 @@ class MPIPool(object):
 
             else:  # message are function args
                 self.worker_status = 'R'
-                self.function(task)
+                ans = self.function(task)
+                if isinstance(ans, types.GeneratorType):
+                    print('\nWARNING\n  Function {0} returns generator {1}.\n'
+                          '  The generator was consumed to avoid workers getting stuck.\n'
+                          .format(self.function, ans))
+                    [x for x in ans]
+                ans = x = None
                 self.worker_status = 'P'
 
 

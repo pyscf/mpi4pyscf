@@ -204,7 +204,7 @@ def gather(sendbuf, root=0):
         recvbuf = numpy.empty(sum(counts), dtype=mpi_dtype)
         comm.Gatherv([sendbuf.ravel(), mpi_dtype],
                      [recvbuf.ravel(), counts, displs, mpi_dtype], root)
-        return recvbuf.reshape((-1,) + sendbuf[0].shape)
+        return recvbuf.reshape((-1,) + sendbuf.shape[1:])
     else:
         comm.gather((sendbuf.size, mpi_dtype), root=root)
         comm.Gatherv([sendbuf.ravel(), mpi_dtype], None, root)
@@ -353,6 +353,7 @@ def _distribute_call(f_arg):
         dev = mpi._registry[reg_procs[mpi.rank]]
         fn = getattr(importlib.import_module(module), name)
     return fn(dev, *args, **kwargs)
+
 if rank == 0:
     def parallel_call(f):
         def with_mpi(dev, *args, **kwargs):
@@ -363,10 +364,35 @@ if rank == 0:
                 return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
                                   (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
         return with_mpi
-
 else:
     def parallel_call(f):
         return f
+
+
+if rank == 0:
+    def _merge_yield(fn):
+        def main_yield(dev, *args, **kwargs):
+            for x in fn(dev, *args, **kwargs):
+                yield x
+            for src in range(1, pool.size):
+                while True:
+                    dat = comm.recv(None, source=src)
+                    if isinstance(dat, str) and dat == 'EOY':
+                        break
+                    yield dat
+        return main_yield
+    def reduced_yield(f):
+        def with_mpi(dev, *args, **kwargs):
+            return pool.apply(_distribute_call, (None, _merge_yield(f), dev, args, kwargs),
+                              (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+        return with_mpi
+else:
+    def reduced_yield(f):
+        def client_yield(*args, **kwargs):
+            for x in f(*args, **kwargs):
+                comm.send(x, 0)
+            comm.send('EOY', 0)
+        return client_yield
 
 def _reduce_call(f_arg):
     from mpi4pyscf.tools import mpi

@@ -56,7 +56,7 @@ def get_pp(mydf, kpts=None):
             vpp = vpp[0]
         return vpp
 
-def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
+def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e_sph'):
     '''Vnuc - Vloc'''
     cell = mydf.cell
     nkpts = len(kpts)
@@ -92,7 +92,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='cint3c2e_sph'):
     if rank == 0 and cell.dimension == 3:
         nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(cell.atom_charges())])
         nucbar *= numpy.pi/cell.vol
-        ovlp = cell.pbc_intor('cint1e_ovlp_sph', 1, lib.HERMITIAN, kpts)
+        ovlp = cell.pbc_intor('int1e_ovlp_sph', 1, lib.HERMITIAN, kpts)
         for k in range(nkpts):
             s = lib.pack_tril(ovlp[k])
             mat[k] += nucbar * s
@@ -155,6 +155,27 @@ class AFTDF(aft.AFTDF):
         if with_j:
             vj = aft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
+
+
+    def loop(self, serial_mode=True):
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return serial_loop(self)
+        else:
+            return aft.AFTDF.loop(self)
+
+    def get_naoaux(self, serial_mode=True):
+        naux = aft.AFTDF.get_naoaux(self)
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return naux
+        else:
+            ps = list(self.mpi_prange(0, naux))
+            return ps[-1][1] - ps[0][0]
+
+
+@mpi.reduced_yield
+def serial_loop(mydf):
+    for Lpq in aft.AFTDF.loop(mydf):
+        yield Lpq
 
 
 if __name__ == '__main__':

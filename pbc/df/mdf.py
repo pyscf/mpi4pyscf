@@ -57,7 +57,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug('Num uniq kpts %d', len(uniq_kpts))
     log.debug2('uniq_kpts %s', uniq_kpts)
     # j2c ~ (-kpt_ji | kpt_ji)
-    j2c = fused_cell.pbc_intor('cint2c2e_sph', hermi=1, kpts=uniq_kpts)
+    j2c = fused_cell.pbc_intor('int2c2e_sph', hermi=1, kpts=uniq_kpts)
     j2ctags = []
     nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
@@ -114,7 +114,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         dtype = 'c16'
     vbar = mydf.auxbar(fused_cell)
     vbar = fuse(vbar)
-    ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
+    ovlp = cell.pbc_intor('int1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
     ovlp = [lib.pack_tril(s) for s in ovlp]
     t1 = log.timer_debug1('aoaux and int2c', *t1)
 
@@ -134,12 +134,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug2('j3c_jobs %s', j3c_jobs)
 
     if j_only:
-        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's2', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's2', 1, kptij_lst)
     else:
-        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's1', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's1', 1, kptij_lst)
         idxb = numpy.tril_indices(nao)
         idxb = (idxb[0] * nao + idxb[1]).astype('i')
-    aux_loc = fused_cell.ao_loc_nr('ssc' in 'cint3c2e_sph')
+    aux_loc = fused_cell.ao_loc_nr('ssc' in 'int3c2e_sph')
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
         dataname = 'j3c-chunks/%d' % job_id
@@ -354,17 +354,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                max_memory, mem_now, blksize)
 
     t2 = t1
-    write_handler = None
-    for k, kptji in enumerate(kptij_lst):
-        for p0, p1 in lib.prange(0, segsize, blksize):
-            segs = load(k, p0, p1)
-            write_handler = async_write(write_handler, save, k, p0, p1, segs)
-            segs = None
-            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
-                                  (k, p0, p1, segsize), *t2)
-    if write_handler is not None:
-        write_handler.join()
-    write_handler = None
+    with lib.call_in_background(save) as async_write:
+        for k, kptji in enumerate(kptij_lst):
+            for p0, p1 in lib.prange(0, segsize, blksize):
+                segs = load(k, p0, p1)
+                async_write(k, p0, p1, segs)
+                t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
+                                      (k, p0, p1, segsize), *t2)
 
     if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
     if 'j3c-kptij' in feri: del(feri['j3c-kptij'])
@@ -406,15 +402,27 @@ class MDF(mdf.MDF, df.DF):
     get_eri = get_ao_eri = mdf_ao2mo.get_eri
     ao2mo = get_mo_eri = mdf_ao2mo.general
 
+
+    def loop(self, serial_mode=True):
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return serial_loop(self)
+        else:
+            return mdf.MDF.loop(self)
+
+    def get_naoaux(self, serial_mode=True):
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return df.get_naoaux(self) + aft.AFTDF.get_naoaux(self)
+        else:
+            return df.DF.get_naoaux(self)
+
+
 def _sync_mydf(mydf):
     return mydf.unpack_(comm.bcast(mydf.pack()))
 
-def async_write(thread_io, fn, *args):
-    if thread_io is not None:
-        thread_io.join()
-    thread_io = lib.background_thread(fn, *args)
-    return thread_io
-
+@mpi.reduced_yield
+def serial_loop(mydf):
+    for Lpq in mdf.MDF.loop(mydf):
+        yield Lpq
 
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto

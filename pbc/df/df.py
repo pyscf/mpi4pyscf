@@ -73,14 +73,14 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
         kptij_lst = numpy.asarray(kptij_lst)
 
     if with_j3c:
-        if isinstance(self._cderi_to_save, str):
-            cderi = self._cderi_to_save
+        if isinstance(mydf._cderi_to_save, str):
+            cderi = mydf._cderi_to_save
         else:
-            cderi = self._cderi_to_save.name
-        if isinstance(self._cderi, str):
+            cderi = mydf._cderi_to_save.name
+        if isinstance(mydf._cderi, str):
             log.warn('Value of _cderi is ignored. DF integrals will be '
                      'saved in file %s .', cderi)
-        self._cderi = cderi
+        mydf._cderi = cderi
         mydf._make_j3c(cell, mydf.auxcell, kptij_lst, cderi)
         t1 = log.timer_debug1('j3c', *t1)
     return mydf
@@ -108,7 +108,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug('Num uniq kpts %d', len(uniq_kpts))
     log.debug2('uniq_kpts %s', uniq_kpts)
     # j2c ~ (-kpt_ji | kpt_ji)
-    j2c = fused_cell.pbc_intor('cint2c2e_sph', hermi=1, kpts=uniq_kpts)
+    j2c = fused_cell.pbc_intor('int2c2e_sph', hermi=1, kpts=uniq_kpts)
     j2ctags = []
     nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
@@ -173,7 +173,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         dtype = 'c16'
     vbar = mydf.auxbar(fused_cell)
     vbar = fuse(vbar)
-    ovlp = cell.pbc_intor('cint1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
+    ovlp = cell.pbc_intor('int1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
     ovlp = [lib.pack_tril(s) for s in ovlp]
     t1 = log.timer_debug1('aoaux and int2c', *t1)
 
@@ -193,12 +193,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug2('j3c_jobs %s', j3c_jobs)
 
     if j_only:
-        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's2', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's2', 1, kptij_lst)
     else:
-        int3c = wrap_int3c(cell, fused_cell, 'cint3c2e_sph', 's1', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's1', 1, kptij_lst)
         idxb = numpy.tril_indices(nao)
         idxb = (idxb[0] * nao + idxb[1]).astype('i')
-    aux_loc = fused_cell.ao_loc_nr('ssc' in 'cint3c2e_sph')
+    aux_loc = fused_cell.ao_loc_nr('ssc' in 'int3c2e_sph')
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
         dataname = 'j3c-chunks/%d' % job_id
@@ -413,17 +413,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                max_memory, mem_now, blksize)
 
     t2 = t1
-    write_handler = None
-    for k, kptji in enumerate(kptij_lst):
-        for p0, p1 in lib.prange(0, segsize, blksize):
-            segs = load(k, p0, p1)
-            write_handler = async_write(write_handler, save, k, p0, p1, segs)
-            segs = None
-            t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
-                                  (k, p0, p1, segsize), *t2)
-    if write_handler is not None:
-        write_handler.join()
-    write_handler = None
+    with lib.call_in_background(save) as async_write:
+        for k, kptji in enumerate(kptij_lst):
+            for p0, p1 in lib.prange(0, segsize, blksize):
+                segs = load(k, p0, p1)
+                async_write(k, p0, p1, segs)
+                t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
+                                      (k, p0, p1, segsize), *t2)
 
     if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
     if 'j3c-kptij' in feri: del(feri['j3c-kptij'])
@@ -442,7 +438,7 @@ class DF(df.DF, aft.AFTDF):
     _int_nuc_vloc = aft._int_nuc_vloc
 
     def dump_flags(self):
-        return df.DF.dump_flags(logger.Logger(self.stdout, self.verbose))
+        return df.DF.dump_flags(self, logger.Logger(self.stdout, self.verbose))
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -482,6 +478,20 @@ class DF(df.DF, aft.AFTDF):
     get_eri = get_ao_eri = df_ao2mo.get_eri
     ao2mo = get_mo_eri = df_ao2mo.general
 
+
+    def loop(self, serial_mode=True):
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return serial_loop(self)
+        else:
+            return df.DF.loop(self)
+
+    def get_naoaux(self, serial_mode=True):
+        if serial_mode:  # The caller on master processor runs in serial mode.
+            return get_naoaux(self)
+        else:
+            return df.DF.get_naoaux(self)
+
+
 def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks, aosym_s2):
     ao_loc = cell.ao_loc_nr()
     if aosym_s2:
@@ -497,11 +507,14 @@ def grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks, aosym_s2):
 def _sync_mydf(mydf):
     return mydf.unpack_(comm.bcast(mydf.pack()))
 
-def async_write(thread_io, fn, *args):
-    if thread_io is not None:
-        thread_io.join()
-    thread_io = lib.background_thread(fn, *args)
-    return thread_io
+@mpi.reduced_yield
+def serial_loop(mydf):
+    for Lpq in df.DF.loop(mydf):
+        yield Lpq
+
+@mpi.call_then_reduce
+def get_naoaux(mydf):
+    return df.DF.get_naoaux(mydf)
 
 
 if __name__ == '__main__':
