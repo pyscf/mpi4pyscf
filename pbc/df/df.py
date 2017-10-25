@@ -345,6 +345,23 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     j2c = kLRs = kLIs = ovlp = vbar = fuse = gen_int3c = ft_fuse = None
     t1 = log.timer_debug1('int3c and fuse', *t1)
 
+    def get_segs_loc(aosym):
+        off0 = numpy.asarray([ao_loc[i0] for x,i0,i1 in j3c_jobs])
+        off1 = numpy.asarray([ao_loc[i1] for x,i0,i1 in j3c_jobs])
+        if aosym:  # s2
+            dims = off1*(off1+1)//2 - off0*(off0+1)//2
+        else:
+            dims = (off1-off0) * nao
+        #dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
+        dims = numpy.hstack([dims[j3c_workers==w] for w in range(mpi.pool.size)])
+        job_idx = numpy.hstack([numpy.where(j3c_workers==w)[0]
+                                for w in range(mpi.pool.size)])
+        segs_loc = numpy.append(0, numpy.cumsum(dims))
+        segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
+        return segs_loc
+    segs_loc_s1 = get_segs_loc(False)
+    segs_loc_s2 = get_segs_loc(True)
+
     if 'j3c' in feri: del(feri['j3c'])
     segsize = (max(nauxs)+mpi.pool.size-1) // mpi.pool.size
     naux0 = rank * segsize
@@ -361,18 +378,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             nao_pair = nao * nao
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
-    off0 = numpy.asarray([ao_loc[i0] for x,i0,i1 in j3c_jobs])
-    off1 = numpy.asarray([ao_loc[i1] for x,i0,i1 in j3c_jobs])
-    if j_only:
-        dims = off1*(off1+1)//2 - off0*(off0+1)//2
-    else:
-        dims = (off1-off0) * nao
-    #dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
-    dims = numpy.hstack([dims[j3c_workers==w] for w in range(mpi.pool.size)])
-    job_idx = numpy.hstack([numpy.where(j3c_workers==w)[0]
-                            for w in range(mpi.pool.size)])
-    segs_loc = numpy.append(0, numpy.cumsum(dims))
-    segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
     def load(k, p0, p1):
         naux1 = nauxs[uniq_inverse[k]]
         slices = [(min(i*segsize+p0,naux1), min(i*segsize+p1,naux1))
@@ -396,8 +401,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         loc0, loc1 = min(p0, naux1-naux0), min(p1, naux1-naux0)
         nL = loc1 - loc0
         if nL > 0:
-            segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
-            segs = numpy.hstack(segs)
+            if aosym_s2[k]:
+                segs = numpy.hstack([segs[i0*nL:i1*nL].reshape(nL,-1)
+                                     for i0,i1 in segs_loc_s2])
+            else:
+                segs = numpy.hstack([segs[i0*nL:i1*nL].reshape(nL,-1)
+                                     for i0,i1 in segs_loc_s1])
             feri['j3c/%d'%k][loc0:loc1] = segs
 
     mem_now = max(comm.allgather(lib.current_memory()[0]))
@@ -451,6 +460,10 @@ class DF(df.DF, aft.AFTDF):
                 'auxbasis'  : self.auxbasis}
     def unpack_(self, dfdic):
         self.__dict__.update(dfdic)
+# auxbasis is a property method of GDF class, Note __dict__.update does not
+# work for a property method
+        self.__dict__.pop('auxbasis')
+        self.auxbasis = dfdic['auxbasis']
         return self
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,

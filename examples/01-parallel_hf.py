@@ -22,7 +22,7 @@ cell.atom = [['C', ([ 0.,  0.,  0.])],
              ['C', ([ 0.    ,  1.7834,  1.7834])],
              ['C', ([ 0.8917,  2.6751,  2.6751])]
             ]
-cell.h = numpy.eye(3) * 3.5668
+cell.a = numpy.eye(3) * 3.5668
 cell.basis = 'sto3g'
 cell.gs = [5] * 3
 cell.verbose = 4

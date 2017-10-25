@@ -302,18 +302,23 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             nao_pair = nao * nao
         feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
-    off0 = numpy.asarray([ao_loc[i0] for x,i0,i1 in j3c_jobs])
-    off1 = numpy.asarray([ao_loc[i1] for x,i0,i1 in j3c_jobs])
-    if j_only:
-        dims = off1*(off1+1)//2 - off0*(off0+1)//2
-    else:
-        dims = (off1-off0) * nao
-    #dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
-    dims = numpy.hstack([dims[j3c_workers==w] for w in range(mpi.pool.size)])
-    job_idx = numpy.hstack([numpy.where(j3c_workers==w)[0]
-                            for w in range(mpi.pool.size)])
-    segs_loc = numpy.append(0, numpy.cumsum(dims))
-    segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
+    def get_segs_loc(aosym):
+        off0 = numpy.asarray([ao_loc[i0] for x,i0,i1 in j3c_jobs])
+        off1 = numpy.asarray([ao_loc[i1] for x,i0,i1 in j3c_jobs])
+        if aosym:  # s2
+            dims = off1*(off1+1)//2 - off0*(off0+1)//2
+        else:
+            dims = (off1-off0) * nao
+        #dims = numpy.asarray([ao_loc[i1]-ao_loc[i0] for x,i0,i1 in j3c_jobs])
+        dims = numpy.hstack([dims[j3c_workers==w] for w in range(mpi.pool.size)])
+        job_idx = numpy.hstack([numpy.where(j3c_workers==w)[0]
+                                for w in range(mpi.pool.size)])
+        segs_loc = numpy.append(0, numpy.cumsum(dims))
+        segs_loc = [(segs_loc[j], segs_loc[j+1]) for j in numpy.argsort(job_idx)]
+        return segs_loc
+    segs_loc_s1 = get_segs_loc(False)
+    segs_loc_s2 = get_segs_loc(True)
+
     def load(k, p0, p1):
         naux1 = nauxs[uniq_inverse[k]]
         slices = [(min(i*segsize+p0,naux1), min(i*segsize+p1,naux1))
@@ -337,8 +342,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         loc0, loc1 = min(p0, naux1-naux0), min(p1, naux1-naux0)
         nL = loc1 - loc0
         if nL > 0:
-            segs = [segs[i0*nL:i1*nL].reshape(nL,-1) for i0,i1 in segs_loc]
-            segs = numpy.hstack(segs)
+            if aosym_s2[k]:
+                segs = numpy.hstack([segs[i0*nL:i1*nL].reshape(nL,-1)
+                                     for i0,i1 in segs_loc_s2])
+            else:
+                segs = numpy.hstack([segs[i0*nL:i1*nL].reshape(nL,-1)
+                                     for i0,i1 in segs_loc_s1])
             feri['j3c/%d'%k][loc0:loc1] = segs
 
     mem_now = max(comm.allgather(lib.current_memory()[0]))
