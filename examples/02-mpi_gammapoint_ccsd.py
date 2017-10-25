@@ -20,7 +20,7 @@ cell = gto.M(
               H     0.      1.7834  1.7834
               H     0.8917  2.6751  2.6751''',
     basis = 'sto3g',
-    gs = [7]*3,
+    mesh = [15]*3,
     verbose = 4,
 )
 
@@ -31,19 +31,19 @@ mycc = cc.CCSD(mf)
 mycc.kernel()
 
 mf.with_df = mpidf.AFTDF(cell)
-mf.with_df.gs = [5]*3
+mf.with_df.mesh = [10]*3
 mf.kernel()
 mycc = cc.CCSD(mf)
 mycc.kernel()
 
 mf.with_df = mpidf.DF(cell)
-mf.with_df.gs = [3]*3
+mf.with_df.mesh = [7]*3
 mf.kernel()
 mycc = cc.CCSD(mf)
 mycc.kernel()
 
 mf.with_df = mpidf.MDF(cell)
-mf.with_df.gs = [3]*3
+mf.with_df.mesh = [7]*3
 mf.kernel()
 mycc = cc.CCSD(mf)
 mycc.kernel()

@@ -19,10 +19,10 @@ if __name__ == '__main__':
     from mpi4pyscf.pbc import df
 
     L = 5.
-    n = 5
+    n = 11
     cell = pgto.Cell()
     cell.a = numpy.diag([L,L,L])
-    cell.gs = numpy.array([n,n,n])
+    cell.mesh = numpy.array([n,n,n])
 
     cell.atom = '''He    3.    2.       3.
                    He    1.    1.       1.'''

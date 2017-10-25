@@ -52,10 +52,10 @@ if __name__ == '__main__':
     from mpi4pyscf.pbc.df import aft
 
     L = 5.
-    n = 5
+    n = 11
     cell = pgto.Cell()
     cell.a = numpy.diag([L,L,L])
-    cell.gs = numpy.array([n,n,n])
+    cell.mesh = numpy.array([n,n,n])
 
     cell.atom = '''He    3.    2.       3.
                    He    1.    1.       1.'''
@@ -68,7 +68,7 @@ if __name__ == '__main__':
     cell.verbose = 5
 
     df = aft.AFTDF(cell)
-    df.gs = (15,)*3
+    df.mesh = (31,)*3
     dm = pscf.RHF(cell).get_init_guess()
     vj, vk = df.get_jk(cell, dm)
     print(numpy.einsum('ij,ji->', df.get_nuc(cell), dm), 'ref=-10.384051732669329')

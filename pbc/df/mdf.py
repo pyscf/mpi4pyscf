@@ -44,11 +44,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     nao = ao_loc[-1]
     naux = auxcell.nao_nr()
     nkptij = len(kptij_lst)
-    gs = mydf.gs
-    Gv, Gvbase, kws = cell.get_Gv_weights(gs)
+    mesh = mydf.mesh
+    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
     b = cell.reciprocal_vectors()
     gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
-    ngs = gxyz.shape[0]
+    ngrids = gxyz.shape[0]
 
     kptis = kptij_lst[:,0]
     kptjs = kptij_lst[:,1]
@@ -69,7 +69,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     for k, kpt in enumerate(uniq_kpts):
         aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         aoaux = fuse(aoaux)
-        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
+        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
         kLR = (aoaux.real * coulG).T
         kLI = (aoaux.imag * coulG).T
         if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
@@ -77,7 +77,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         aoaux = None
 
         j2c[k] = fuse(fuse(j2c[k]).T).T.copy()
-        for p0, p1 in mydf.mpi_prange(0, ngs):
+        for p0, p1 in mydf.mpi_prange(0, ngrids):
             if is_zero(kpt):  # kpti == kptj
                 j2cR = lib.dot(kLR[p0:p1].T, kLR[p0:p1])
                 j2cR = lib.dot(kLI[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
@@ -203,7 +203,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         Gaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
         Gaux = fuse(Gaux)
-        Gaux *= mydf.weighted_coulG(kpt, False, gs)
+        Gaux *= mydf.weighted_coulG(kpt, False, mesh)
         kLR = Gaux.T.real.copy('C')
         kLI = Gaux.T.imag.copy('C')
         j2c = numpy.asarray(feri['j2c/%d'%uniq_kptji_id])
@@ -233,14 +233,14 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
-        Gblksize = min(Gblksize, ngs, 16384)
+        Gblksize = min(Gblksize, ngrids, 16384)
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
         log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
 
         shls_slice = (sh0, sh1, 0, cell.nbas)
-        for p0, p1 in lib.prange(0, ngs, Gblksize):
+        for p0, p1 in lib.prange(0, ngrids, Gblksize):
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
@@ -427,7 +427,7 @@ def serial_loop(mydf):
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
     from mpi4pyscf.pbc import df
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, mesh=[11]*3)
     mydf = df.MDF(cell, kpts)
 
     v = mydf.get_nuc()

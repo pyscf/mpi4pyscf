@@ -43,18 +43,18 @@ def get_nuc(mydf, kpts):
     else:
         dtype = numpy.complex128
 
-    gs = mydf.gs
+    mesh = mydf.mesh
     charge = -cell.atom_charges()
-    Gv = cell.get_Gv(gs)
+    Gv = cell.get_Gv(mesh)
     SI = cell.get_SI(Gv)
     rhoG = numpy.dot(charge, SI)
 
-    coulG = tools.get_coulG(cell, gs=gs, Gv=Gv)
+    coulG = tools.get_coulG(cell, mesh=mesh, Gv=Gv)
     vneG = rhoG * coulG
-    vneR = tools.ifft(vneG, mydf.gs).real
+    vneR = tools.ifft(vneG, mydf.mesh).real
 
     vne = [lib.dot(aoR.T.conj()*vneR, aoR)
-           for k, aoR in mydf.mpi_aoR_loop(gs, kpts_lst)]
+           for k, aoR in mydf.mpi_aoR_loop(mesh, kpts_lst)]
     vne = mpi.gather(lib.asarray(vne, dtype=dtype))
 
     if rank == 0:
@@ -76,19 +76,19 @@ def get_pp(mydf, kpts=None):
     else:
         dtype = numpy.complex128
 
-    gs = mydf.gs
+    mesh = mydf.mesh
     SI = cell.get_SI()
-    Gv = cell.get_Gv(gs)
+    Gv = cell.get_Gv(mesh)
     vpplocG = pseudo.get_vlocG(cell, Gv)
     vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
     vpplocG[0] = numpy.sum(pseudo.get_alphas(cell)) # from get_jvloc_G0 function
-    ngs = len(vpplocG)
+    ngrids = len(vpplocG)
     nao = cell.nao_nr()
 
     # vpploc evaluated in real-space
-    vpplocR = tools.ifft(vpplocG, cell.gs).real
+    vpplocR = tools.ifft(vpplocG, mesh).real
     vpp = [lib.dot(aoR.T.conj()*vpplocR, aoR)
-           for k, aoR in mydf.mpi_aoR_loop(gs, kpts_lst)]
+           for k, aoR in mydf.mpi_aoR_loop(mesh, kpts_lst)]
     vpp = mpi.gather(lib.asarray(vpp, dtype=dtype))
 
     # vppnonloc evaluated in reciprocal space
@@ -103,11 +103,11 @@ def get_pp(mydf, kpts=None):
     fakemol._bas[0,gto.PTR_COEFF] = ptr+4
 
     # buf for SPG_lmi upto l=0..3 and nl=3
-    buf = numpy.empty((48,ngs), dtype=numpy.complex128)
+    buf = numpy.empty((48,ngrids), dtype=numpy.complex128)
     def vppnl_by_k(kpt):
         Gk = Gv + kpt
         G_rad = lib.norm(Gk, axis=1)
-        aokG = ft_ao.ft_ao(cell, Gv, kpt=kpt) * (ngs/cell.vol)
+        aokG = ft_ao.ft_ao(cell, Gv, kpt=kpt) * (ngrids/cell.vol)
         vppnl = 0
         for ia in range(cell.natm):
             symb = cell.atom_symbol(ia)
@@ -125,7 +125,7 @@ def get_pp(mydf, kpts=None):
 
                     p0, p1 = p1, p1+nl*(l*2+1)
                     # pYlm is real, SI[ia] is complex
-                    pYlm = numpy.ndarray((nl,l*2+1,ngs), dtype=numpy.complex128, buffer=buf[p0:p1])
+                    pYlm = numpy.ndarray((nl,l*2+1,ngrids), dtype=numpy.complex128, buffer=buf[p0:p1])
                     for k in range(nl):
                         qkl = pseudo.pp._qli(G_rad*rl, l, k)
                         pYlm[k] = pYlm_part.T * qkl
@@ -145,7 +145,7 @@ def get_pp(mydf, kpts=None):
                     SPG_lm_aoG = SPG_lm_aoGs[p0:p1].reshape(nl,l*2+1,-1)
                     tmp = numpy.einsum('ij,jmp->imp', hl, SPG_lm_aoG)
                     vppnl += numpy.einsum('imp,imq->pq', SPG_lm_aoG.conj(), tmp)
-        return vppnl * (1./ngs**2)
+        return vppnl * (1./ngrids**2)
 
     vppnl = []
     for kpt in mpi.static_partition(kpts_lst):
@@ -172,27 +172,26 @@ class FFTDF(fft.FFTDF):
         return {'verbose'   : self.verbose,
                 'max_memory': self.max_memory,
                 'kpts'      : self.kpts,
-                'gs'        : self.gs}
+                'mesh'      : self.mesh}
     def unpack_(self, dfdic):
         self.__dict__.update(dfdic)
         return self
 
-    def mpi_aoR_loop(self, gs=None, kpts=None, kpts_band=None):
+    def mpi_aoR_loop(self, mesh=None, kpts=None, kpts_band=None):
         cell = self.cell
         if kpts is None: kpts = self.kpts
         kpts = numpy.asarray(kpts)
 
-        if gs is None:
-            gs = numpy.asarray(self.gs)
+        if mesh is None:
+            mesh = numpy.asarray(self.mesh)
         else:
-            gs = numpy.asarray(gs)
-            if any(gs != self.gs):
+            mesh = numpy.asarray(mesh)
+            if any(mesh != self.mesh):
                 self.non0tab = None
-            self.gs = gs
-        ngrids = numpy.prod(gs*2+1)
+            self.mesh = mesh
 
         ni = self._numint
-        coords = cell.gen_uniform_grids(gs)
+        coords = cell.gen_uniform_grids(mesh)
         if self.non0tab is None:
             self.non0tab = ni.make_mask(cell, coords)
         if kpts_band is None:
@@ -248,7 +247,7 @@ if __name__ == '__main__':
                   'C' :'gth-szv',}
     cell.pseudo = {'C':'gth-pade'}
     cell.h = numpy.eye(3) * 2.5
-    cell.gs = [5] * 3
+    cell.mesh = [11] * 3
     cell.build()
     numpy.random.seed(19)
     kpts = numpy.random.random((5,3))
@@ -259,7 +258,7 @@ if __name__ == '__main__':
     v = mydf.get_pp(kpts)
     print(v.shape)
 
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', h=numpy.eye(3)*4, mesh=[11]*3)
     mydf = df.FFTDF(cell)
     nao = cell.nao_nr()
     dm = numpy.ones((nao,nao))

@@ -95,11 +95,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     nao = ao_loc[-1]
     naux = auxcell.nao_nr()
     nkptij = len(kptij_lst)
-    gs = mydf.gs
-    Gv, Gvbase, kws = cell.get_Gv_weights(gs)
+    mesh = mydf.mesh
+    Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
     b = cell.reciprocal_vectors()
     gxyz = lib.cartesian_prod([numpy.arange(len(x)) for x in Gvbase])
-    ngs = gxyz.shape[0]
+    ngrids = gxyz.shape[0]
 
     kptis = kptij_lst[:,0]
     kptjs = kptij_lst[:,1]
@@ -119,7 +119,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         feri = h5py.File(cderi_file, 'w')
     for k, kpt in enumerate(uniq_kpts):
         aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
-        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
+        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
         kLR = (aoaux.real * coulG).T
         kLI = (aoaux.imag * coulG).T
         if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
@@ -129,13 +129,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         kLR1 = numpy.asarray(kLR[:,naux:], order='C')
         kLI1 = numpy.asarray(kLI[:,naux:], order='C')
         if is_zero(kpt):  # kpti == kptj
-            for p0, p1 in mydf.mpi_prange(0, ngs):
+            for p0, p1 in mydf.mpi_prange(0, ngrids):
                 j2cR = lib.ddot(kLR1[p0:p1].T, kLR[p0:p1])
                 j2cR = lib.ddot(kLI1[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
                 j2c[k][naux:] -= mpi.allreduce(j2cR)
                 j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
         else:
-            for p0, p1 in mydf.mpi_prange(0, ngs):
+            for p0, p1 in mydf.mpi_prange(0, ngrids):
                 j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
                 j2cR = mpi.allreduce(j2cR)
                 j2cI = mpi.allreduce(j2cI)
@@ -149,7 +149,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         except scipy.linalg.LinAlgError as e:
             #msg =('===================================\n'
             #      'J-metric not positive definite.\n'
-            #      'It is likely that gs is not enough.\n'
+            #      'It is likely that mesh is not enough.\n'
             #      '===================================')
             #log.error(msg)
             #raise scipy.linalg.LinAlgError('\n'.join([e.message, msg]))
@@ -262,7 +262,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         shls_slice = (auxcell.nbas, fused_cell.nbas)
         Gaux = ft_ao.ft_ao(fused_cell, Gv, shls_slice, b, gxyz, Gvbase, kpt)
-        Gaux *= mydf.weighted_coulG(kpt, False, gs).reshape(-1,1)
+        Gaux *= mydf.weighted_coulG(kpt, False, mesh).reshape(-1,1)
         kLR = Gaux.real.copy('C')
         kLI = Gaux.imag.copy('C')
         j2c = numpy.asarray(feri['j2c/%d'%uniq_kptji_id])
@@ -292,14 +292,14 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         ncol = j3cR[0].shape[1]
         Gblksize = max(16, int(max_memory*1e6/16/ncol/(nkptj+1)))  # +1 for pqkRbuf/pqkIbuf
-        Gblksize = min(Gblksize, ngs, 16384)
+        Gblksize = min(Gblksize, ngrids, 16384)
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
         log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
 
         shls_slice = (sh0, sh1, 0, cell.nbas)
-        for p0, p1 in lib.prange(0, ngs, Gblksize):
+        for p0, p1 in lib.prange(0, ngrids, Gblksize):
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
@@ -445,7 +445,7 @@ class DF(df.DF, aft.AFTDF):
                 'max_memory': self.max_memory,
                 'kpts'      : self.kpts,
                 'kpts_band' : self.kpts_band,
-                'gs'        : self.gs,
+                'mesh'      : self.mesh,
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
                 'auxbasis'  : self.auxbasis}
@@ -520,7 +520,7 @@ def get_naoaux(mydf):
 if __name__ == '__main__':
     from pyscf.pbc import gto as pgto
     from mpi4pyscf.pbc import df
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, mesh=[11]*3)
     mydf = df.DF(cell, kpts)
 
     v = mydf.get_nuc()

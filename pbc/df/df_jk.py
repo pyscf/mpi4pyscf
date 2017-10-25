@@ -22,7 +22,7 @@ rank = mpi.rank
 # real space, long range part in reciprocal space.
 #
 
-def density_fit(mf, auxbasis=None, gs=None, with_df=None):
+def density_fit(mf, auxbasis=None, mesh=None, with_df=None):
     '''Generte density-fitting SCF object
 
     Args:
@@ -30,8 +30,8 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
             Same format to the input attribute mol.basis.
             The default basis 'weigend+etb' means weigend-coulomb-fit basis
             for light elements and even-tempered basis for heavy elements.
-        gs : tuple
-            number of grids in each (+)direction
+        mesh : tuple
+            number of grids in each direction
         with_df : MDF object
     '''
     from mpi4pyscf.pbc.df import df
@@ -45,8 +45,8 @@ def density_fit(mf, auxbasis=None, gs=None, with_df=None):
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
         with_df.auxbasis = auxbasis
-        if gs is not None:
-            with_df.gs = gs
+        if mesh is not None:
+            with_df.mesh = mesh
 
     mf = copy.copy(mf)
     mf.with_df = with_df
@@ -90,10 +90,10 @@ if __name__ == '__main__':
     import pyscf.pbc.dft as pdft
 
     L = 5.
-    n = 5
+    n = 11
     cell = pgto.Cell()
     cell.a = numpy.diag([L,L,L])
-    cell.gs = numpy.array([n,n,n])
+    cell.mesh = numpy.array([n,n,n])
 
     cell.atom = '''C    3.    2.       3.
                    C    1.    1.       1.'''
@@ -108,7 +108,7 @@ if __name__ == '__main__':
     mf = pscf.RHF(cell)
     auxbasis = 'weigend'
     mf = density_fit(mf, auxbasis)
-    mf.with_df.gs = (5,) * 3
+    mf.with_df.mesh = (11,) * 3
     mf.with_df.approx_sr_level = 3
     dm = mf.get_init_guess()
     vj = mf.get_j(cell, dm)
@@ -122,7 +122,7 @@ if __name__ == '__main__':
     from mpi4pyscf.pbc.df import DF
     with_df = DF(cell, kpts)
     with_df.auxbasis = 'weigend'
-    with_df.gs = [5] * 3
+    with_df.mesh = [11] * 3
     dms = numpy.array([dm]*len(kpts))
     vj, vk = with_df.get_jk(dms, exxdiv=mf.exxdiv, kpts=kpts)
     print(numpy.einsum('ij,ji->', vj[0], dms[0]) - 46.69784067248350)

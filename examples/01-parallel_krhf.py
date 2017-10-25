@@ -27,7 +27,7 @@ cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
 cell.h = ase_atom.cell
 cell.basis = 'gth-szv'
 cell.pseudo = 'gth-pade'
-cell.gs = [7]*3
+cell.mesh = [15]*3
 cell.verbose = 5
 cell.build()
 

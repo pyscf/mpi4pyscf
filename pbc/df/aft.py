@@ -111,7 +111,7 @@ class AFTDF(aft.AFTDF):
         return {'verbose'   : self.verbose,
                 'max_memory': self.max_memory,
                 'kpts'      : self.kpts,
-                'gs'        : self.gs}
+                'mesh'      : self.mesh}
     def unpack_(self, dfdic):
         self.__dict__.update(dfdic)
         return self
@@ -188,7 +188,7 @@ if __name__ == '__main__':
                   'C' :'gth-szv',}
     cell.pseudo = {'C':'gth-pade'}
     cell.a = numpy.eye(3) * 2.5
-    cell.gs = [5] * 3
+    cell.mesh = [11] * 3
     cell.build()
     numpy.random.seed(19)
     kpts = numpy.random.random((5,3))
@@ -199,7 +199,7 @@ if __name__ == '__main__':
     v = mydf.get_pp(kpts)
     print(v.shape)
 
-    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, gs=[5]*3)
+    cell = pgto.M(atom='He 0 0 0; He 0 0 1', a=numpy.eye(3)*4, mesh=[11]*3)
     mydf = df.AFTDF(cell)
     nao = cell.nao_nr()
     dm = numpy.ones((nao,nao))

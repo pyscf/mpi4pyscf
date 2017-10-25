@@ -24,7 +24,7 @@ cell.atom = [['C', ([ 0.,  0.,  0.])],
             ]
 cell.h = numpy.eye(3) * 3.5668
 cell.basis = 'sto3g'
-cell.gs = [5] * 3
+cell.mesh = [10] * 3
 cell.verbose = 4
 cell.build()
 cell.max_memory = 1

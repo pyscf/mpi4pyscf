@@ -30,31 +30,31 @@ def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                kpts_band=None):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
-    gs = mydf.gs
+    mesh = mydf.mesh
 
     dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
 
-    coulG = tools.get_coulG(cell, gs=gs)
-    ngs = len(coulG)
+    coulG = tools.get_coulG(cell, mesh=mesh)
+    ngrids = len(coulG)
 
-    vR = rhoR = numpy.zeros((nset,ngs))
-    for k, aoR in mydf.mpi_aoR_loop(gs, kpts):
+    vR = rhoR = numpy.zeros((nset,ngrids))
+    for k, aoR in mydf.mpi_aoR_loop(mesh, kpts):
         for i in range(nset):
             rhoR[i] += numint.eval_rho(cell, aoR, dms[i,k])
     vR = rhoR = mpi.allreduce(rhoR)
     for i in range(nset):
         rhoR[i] *= 1./nkpts
-        rhoG = tools.fft(rhoR[i], gs)
+        rhoG = tools.fft(rhoR[i], mesh)
         vG = coulG * rhoG
-        vR[i] = tools.ifft(vG, gs).real
+        vR[i] = tools.ifft(vG, mesh).real
 
     kpts_band, single_kpt_band = _format_kpts_band(kpts_band, kpts)
     nband = len(kpts_band)
-    weight = cell.vol / ngs
+    weight = cell.vol / ngrids
     vj_kpts = numpy.zeros((nset,nband,nao,nao), dtype=numpy.complex128)
-    for k, aoR in mydf.mpi_aoR_loop(gs, kpts_band):
+    for k, aoR in mydf.mpi_aoR_loop(mesh, kpts_band):
         for i in range(nset):
             vj_kpts[i,k] = weight * lib.dot(aoR.T.conj()*vR[i], aoR)
 
@@ -68,28 +68,28 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                kpts_band=None, exxdiv=None):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
-    gs = mydf.gs
-    coords = cell.gen_uniform_grids(gs)
-    ngs = coords.shape[0]
+    mesh = mydf.mesh
+    coords = cell.gen_uniform_grids(mesh)
+    ngrids = coords.shape[0]
 
     kpts = numpy.asarray(kpts)
     dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
 
-    weight = 1./nkpts * (cell.vol/ngs)
+    weight = 1./nkpts * (cell.vol/ngrids)
 
     kpts_band, single_kpt_band = _format_kpts_band(kpts_band, kpts)
     nband = len(kpts_band)
     vk_kpts = numpy.zeros((nset,nband,nao,nao), dtype=numpy.complex128)
 
-    for k2, ao_k2 in mydf.mpi_aoR_loop(gs, kpts):
+    for k2, ao_k2 in mydf.mpi_aoR_loop(mesh, kpts):
         kpt2 = kpts[k2]
         aoR_dms = [lib.dot(ao_k2, dms[i,k2]) for i in range(nset)]
-        for k1, ao_k1 in mydf.aoR_loop(gs, kpts_band):
+        for k1, ao_k1 in mydf.aoR_loop(mesh, kpts_band):
             kpt1 = kpts_band[k1]
             vkR_k1k2 = get_vkR(mydf, cell, ao_k1, ao_k2, kpt1, kpt2,
-                               coords, gs, exxdiv)
+                               coords, mesh, exxdiv)
             for i in range(nset):
                 tmp_Rq = numpy.einsum('Rqs,Rs->Rq', vkR_k1k2, aoR_dms[i])
                 vk_kpts[i,k1] += weight * lib.dot(ao_k1.T.conj(), tmp_Rq)
