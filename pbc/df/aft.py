@@ -110,6 +110,8 @@ class AFTDF(aft.AFTDF):
     def pack(self):
         return {'verbose'   : self.verbose,
                 'max_memory': self.max_memory,
+                'blockdim'  : self.blockdim,
+                'eta'       : self.eta,
                 'kpts'      : self.kpts,
                 'mesh'      : self.mesh}
     def unpack_(self, dfdic):

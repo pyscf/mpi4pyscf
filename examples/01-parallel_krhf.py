@@ -24,7 +24,7 @@ ase_atom = Diamond(symbol='C', latticeconstant=3.5668)
 
 cell = pbcgto.Cell()
 cell.atom = pyscf_ase.ase_atoms_to_pyscf(ase_atom)
-cell.h = ase_atom.cell
+cell.a = ase_atom.cell
 cell.basis = 'gth-szv'
 cell.pseudo = 'gth-pade'
 cell.mesh = [15]*3
