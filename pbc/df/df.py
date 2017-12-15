@@ -6,6 +6,7 @@
 import time
 import platform
 import ctypes
+import tempfile
 import numpy
 import scipy.linalg
 import h5py
@@ -457,13 +458,20 @@ class DF(df.DF, aft.AFTDF):
                 'gs'        : self.gs,
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
-                'auxbasis'  : self.auxbasis}
+                'auxbasis'  : self.auxbasis,
+                '_cderi'     : self._cderi}
     def unpack_(self, dfdic):
+        remote_cderi = dfdic.pop('_cderi')
         self.__dict__.update(dfdic)
 # auxbasis is a property method of GDF class, Note __dict__.update does not
-# work for a property method
+# work for a property method.
         self.__dict__.pop('auxbasis')
-        self.auxbasis = dfdic['auxbasis']
+        self._auxbasis = dfdic['auxbasis']
+# Note when auxbasis was changed in the master processor, _cderi on master is
+# cleared.  Following to reset _cderi and _cderi_to_save when necessary.
+        if remote_cderi is None and self._cderi is not None:
+            self._cderi = None
+            self._cderi_to_save = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR)
         return self
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
