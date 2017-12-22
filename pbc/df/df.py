@@ -118,30 +118,38 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         feri = h5py.File(cderi_file)
     else:
         feri = h5py.File(cderi_file, 'w')
-    for k, kpt in enumerate(uniq_kpts):
-        aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
-        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
-        kLR = (aoaux.real * coulG).T
-        kLI = (aoaux.imag * coulG).T
-        if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
-        if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
-        aoaux = None
 
-        kLR1 = numpy.asarray(kLR[:,naux:], order='C')
-        kLI1 = numpy.asarray(kLI[:,naux:], order='C')
-        if is_zero(kpt):  # kpti == kptj
-            for p0, p1 in mydf.mpi_prange(0, ngs):
-                j2cR = lib.ddot(kLR1[p0:p1].T, kLR[p0:p1])
-                j2cR = lib.ddot(kLI1[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
-                j2c[k][naux:] -= mpi.allreduce(j2cR)
-                j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
-        else:
-            for p0, p1 in mydf.mpi_prange(0, ngs):
-                j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
-                j2cR = mpi.allreduce(j2cR)
-                j2cI = mpi.allreduce(j2cI)
-                j2c[k][naux:] -= j2cR + j2cI * 1j
-                j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T.conj()
+    mem_now = max(comm.allgather(lib.current_memory()[0]))
+    max_memory = max(2000, mydf.max_memory - mem_now)
+    blksize = max(2048, int(max_memory*.5e6/16/fused_cell.nao_nr()))
+    log.debug2('max_memory %s (MB)  blocksize %s', max_memory, blksize)
+    for k, kpt in enumerate(uniq_kpts):
+        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
+        for p0, p1 in lib.prange(0, ngs, blksize):
+            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
+            kLR = (aoaux.real * coulG[p0:p1]).T
+            kLI = (aoaux.imag * coulG[p0:p1]).T
+            aoaux = None
+            if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
+            if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
+
+            kLR1 = numpy.asarray(kLR[:,naux:], order='C')
+            kLI1 = numpy.asarray(kLI[:,naux:], order='C')
+            if is_zero(kpt):  # kpti == kptj
+                for p0, p1 in mydf.mpi_prange(0, ngrids):
+                    j2cR = lib.ddot(kLR1[p0:p1].T, kLR[p0:p1])
+                    j2cR = lib.ddot(kLI1[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
+                    j2c[k][naux:] -= mpi.allreduce(j2cR)
+                    j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
+            else:
+                for p0, p1 in mydf.mpi_prange(0, ngrids):
+                    j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
+                    j2cR = mpi.allreduce(j2cR)
+                    j2cI = mpi.allreduce(j2cI)
+                    j2c[k][naux:] -= j2cR + j2cI * 1j
+                    j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T.conj()
+            kLR = kLI = kLR1 = kLI1 = None
+
         j2c[k] = fuse(fuse(j2c[k]).T).T
         try:
             feri['j2c/%d'%k] = scipy.linalg.cholesky(j2c[k], lower=True)
@@ -163,8 +171,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             feri['j2c/%d'%k] = v
             j2ctags.append('eig')
             nauxs.append(v.shape[0])
-        kLR = kLI = kLR1 = kLI1 = coulG = None
-    j2c = None
+    j2c = coulG = None
 
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
     j_only = numpy.all(aosym_s2)
@@ -209,10 +216,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         i0 = ao_loc[ish0]
         i1 = ao_loc[ish1]
         dii = i1*(i1+1)//2 - i0*(i0+1)//2
-        dij = (i1 - i0) * nao
         if j_only:
+            dij = dii
             buflen = max(8, int(max_memory*1e6/16/(nkptij*dii+dii)))
         else:
+            dij = (i1 - i0) * nao
             buflen = max(8, int(max_memory*1e6/16/(nkptij*dij+dij)))
         auxranges = balance_segs(aux_loc[1:]-aux_loc[:-1], buflen)
         buflen = max([x[2] for x in auxranges])
@@ -236,10 +244,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             log.alldebug2("aux_e2 job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             sub_slice = (ish0, ish1, 0, cell.nbas, sh0, sh1)
-            if j_only:
-                mat = numpy.ndarray((nkptij,dii,nrow), dtype=dtype, buffer=buf)
-            else:
-                mat = numpy.ndarray((nkptij,dij,nrow), dtype=dtype, buffer=buf)
+            mat = numpy.ndarray((nkptij,dij,nrow), dtype=dtype, buffer=buf)
             mat = int3c(sub_slice, mat)
 
             for k, kptij in enumerate(kptij_lst):
@@ -261,11 +266,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         adapted_kptjs = kptjs[adapted_ji_idx]
         nkptj = len(adapted_kptjs)
 
-        shls_slice = (auxcell.nbas, fused_cell.nbas)
-        Gaux = ft_ao.ft_ao(fused_cell, Gv, shls_slice, b, gxyz, Gvbase, kpt)
-        Gaux *= mydf.weighted_coulG(kpt, False, gs).reshape(-1,1)
-        kLR = Gaux.real.copy('C')
-        kLI = Gaux.imag.copy('C')
         j2c = numpy.asarray(feri['j2c/%d'%uniq_kptji_id])
         j2ctag = j2ctags[uniq_kptji_id]
         naux0 = j2c.shape[0]
@@ -297,10 +297,19 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         pqkRbuf = numpy.empty(ncol*Gblksize)
         pqkIbuf = numpy.empty(ncol*Gblksize)
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
-        log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
+        log.alldebug2('job_id %d  blksize (%d,%d)', job_id, Gblksize, ncol)
 
+        wcoulG = mydf.weighted_coulG(kpt, False, mesh)
+        fused_cell_slice = (auxcell.nbas, fused_cell.nbas)
         shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngs, Gblksize):
+            Gaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], fused_cell_slice, b,
+                               gxyz[p0:p1], Gvbase, kpt)
+            Gaux *= wcoulG[p0:p1,None]
+            kLR = Gaux.real.copy('C')
+            kLI = Gaux.imag.copy('C')
+            Gaux = None
+
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
@@ -312,11 +321,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 pqkR[:] = aoao.real.T
                 pqkI[:] = aoao.imag.T
 
-                lib.dot(kLR[p0:p1].T, pqkR.T, -1, j3cR[k][naux:], 1)
-                lib.dot(kLI[p0:p1].T, pqkI.T, -1, j3cR[k][naux:], 1)
+                lib.dot(kLR.T, pqkR.T, -1, j3cR[k][naux:], 1)
+                lib.dot(kLI.T, pqkI.T, -1, j3cR[k][naux:], 1)
                 if not (is_zero(kpt) and gamma_point(adapted_kptjs[k])):
-                    lib.dot(kLR[p0:p1].T, pqkI.T, -1, j3cI[k][naux:], 1)
-                    lib.dot(kLI[p0:p1].T, pqkR.T,  1, j3cI[k][naux:], 1)
+                    lib.dot(kLR.T, pqkI.T, -1, j3cI[k][naux:], 1)
+                    lib.dot(kLI.T, pqkR.T,  1, j3cI[k][naux:], 1)
+            kLR = kLI = None
 
         for k, idx in enumerate(adapted_ji_idx):
             if is_zero(kpt) and gamma_point(adapted_kptjs[k]):
@@ -343,7 +353,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j3c_workers[job_id] = rank
     j3c_workers = mpi.allreduce(j3c_workers)
     log.debug2('j3c_workers %s', j3c_workers)
-    j2c = kLRs = kLIs = ovlp = vbar = fuse = gen_int3c = ft_fuse = None
+    fuse = gen_int3c = ft_fuse = None
     t1 = log.timer_debug1('int3c and fuse', *t1)
 
     def get_segs_loc(aosym):
