@@ -124,7 +124,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     blksize = max(2048, int(max_memory*.5e6/16/fused_cell.nao_nr()))
     log.debug2('max_memory %s (MB)  blocksize %s', max_memory, blksize)
     for k, kpt in enumerate(uniq_kpts):
-        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
+        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
         for p0, p1 in lib.prange(0, ngs, blksize):
             aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
             kLR = (aoaux.real * coulG[p0:p1]).T
@@ -136,13 +136,13 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             kLR1 = numpy.asarray(kLR[:,naux:], order='C')
             kLI1 = numpy.asarray(kLI[:,naux:], order='C')
             if is_zero(kpt):  # kpti == kptj
-                for p0, p1 in mydf.mpi_prange(0, ngrids):
+                for p0, p1 in mydf.mpi_prange(0, ngs):
                     j2cR = lib.ddot(kLR1[p0:p1].T, kLR[p0:p1])
                     j2cR = lib.ddot(kLI1[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
                     j2c[k][naux:] -= mpi.allreduce(j2cR)
                     j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
             else:
-                for p0, p1 in mydf.mpi_prange(0, ngrids):
+                for p0, p1 in mydf.mpi_prange(0, ngs):
                     j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
                     j2cR = mpi.allreduce(j2cR)
                     j2cI = mpi.allreduce(j2cI)
@@ -299,7 +299,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
         log.alldebug2('job_id %d  blksize (%d,%d)', job_id, Gblksize, ncol)
 
-        wcoulG = mydf.weighted_coulG(kpt, False, mesh)
+        wcoulG = mydf.weighted_coulG(kpt, False, gs)
         fused_cell_slice = (auxcell.nbas, fused_cell.nbas)
         shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngs, Gblksize):
