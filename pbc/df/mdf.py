@@ -67,27 +67,27 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     else:
         feri = h5py.File(cderi_file, 'w')
     for k, kpt in enumerate(uniq_kpts):
-        aoaux = ft_ao.ft_ao(fused_cell, Gv, None, b, gxyz, Gvbase, kpt).T
-        aoaux = fuse(aoaux)
         coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
-        kLR = (aoaux.real * coulG).T
-        kLI = (aoaux.imag * coulG).T
-        if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
-        if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
-        aoaux = None
-
         j2c[k] = fuse(fuse(j2c[k]).T).T.copy()
+        j2c_k = numpy.zeros_like(j2c[k])
         for p0, p1 in mydf.mpi_prange(0, ngs):
+            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
+            aoaux = fuse(aoaux)
+            kLR = (aoaux.real * coulG[p0:p1]).T
+            kLI = (aoaux.imag * coulG[p0:p1]).T
+            aoaux = None
+            if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
+            if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
+
             if is_zero(kpt):  # kpti == kptj
-                j2cR = lib.dot(kLR[p0:p1].T, kLR[p0:p1])
-                j2cR = lib.dot(kLI[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
-                j2c[k] -= mpi.allreduce(j2cR)
+                j2cR = lib.dot(kLR.T, kLR)
+                j2c_k += lib.dot(kLI.T, kLI, 1, j2cR, 1)
             else:
                  # aoaux ~ kpt_ij, aoaux.conj() ~ kpt_kl
-                j2cR, j2cI = zdotCN(kLR[p0:p1].T, kLI[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
-                j2cR = mpi.allreduce(j2cR)
-                j2cI = mpi.allreduce(j2cI)
-                j2c[k] -= j2cR + j2cI * 1j
+                j2cR, j2cI = zdotCN(kLR.T, kLI.T, kLR, kLI)
+                j2c_k += j2cR + j2cI * 1j
+            kLR = kLI = None
+        j2c[k] -= mpi.allreduce(j2c_k)
 
         try:
             feri['j2c/%d'%k] = scipy.linalg.cholesky(j2c[k], lower=True)

@@ -125,7 +125,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug2('max_memory %s (MB)  blocksize %s', max_memory, blksize)
     for k, kpt in enumerate(uniq_kpts):
         coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, gs))
-        for p0, p1 in lib.prange(0, ngs, blksize):
+        j2c_k = numpy.zeros_like(j2c[k])
+        for p0, p1 in mydf.mpi_prange(0, ngs, blksize):
             aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
             kLR = (aoaux.real * coulG[p0:p1]).T
             kLI = (aoaux.imag * coulG[p0:p1]).T
@@ -136,20 +137,15 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             kLR1 = numpy.asarray(kLR[:,naux:], order='C')
             kLI1 = numpy.asarray(kLI[:,naux:], order='C')
             if is_zero(kpt):  # kpti == kptj
-                for p0, p1 in mydf.mpi_prange(0, ngs):
-                    j2cR = lib.ddot(kLR1[p0:p1].T, kLR[p0:p1])
-                    j2cR = lib.ddot(kLI1[p0:p1].T, kLI[p0:p1], 1, j2cR, 1)
-                    j2c[k][naux:] -= mpi.allreduce(j2cR)
-                    j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T
+                j2cR = lib.ddot(kLR1.T, kLR)
+                j2c_k[naux:] += lib.ddot(kLI1.T, kLI, 1, j2cR, 1)
             else:
-                for p0, p1 in mydf.mpi_prange(0, ngs):
-                    j2cR, j2cI = zdotCN(kLR1[p0:p1].T, kLI1[p0:p1].T, kLR[p0:p1], kLI[p0:p1])
-                    j2cR = mpi.allreduce(j2cR)
-                    j2cI = mpi.allreduce(j2cI)
-                    j2c[k][naux:] -= j2cR + j2cI * 1j
-                    j2c[k][:naux,naux:] = j2c[k][naux:,:naux].T.conj()
+                j2cR, j2cI = zdotCN(kLR1.T, kLI1.T, kLR, kLI)
+                j2c_k[naux:] += j2cR + j2cI * 1j
             kLR = kLI = kLR1 = kLI1 = None
 
+        j2c_k[:naux,naux:] = j2c_k[naux:,:naux].conj().T
+        j2c[k] -= mpi.allreduce(j2c_k)
         j2c[k] = fuse(fuse(j2c[k]).T).T
         try:
             feri['j2c/%d'%k] = scipy.linalg.cholesky(j2c[k], lower=True)
@@ -162,8 +158,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             #      '===================================')
             #log.error(msg)
             #raise scipy.linalg.LinAlgError('\n'.join([e.message, msg]))
-            w, v = scipy.linalg.eigh(j2c)
-            log.debug2('metric linear dependency for kpt %s', uniq_kptji_id)
+            w, v = scipy.linalg.eigh(j2c[k])
+            log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
                        w[0]/w[-1], numpy.count_nonzero(w<LINEAR_DEP_THR))
             v = v[:,w>LINEAR_DEP_THR].T.conj()
