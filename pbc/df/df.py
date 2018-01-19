@@ -161,9 +161,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             w, v = scipy.linalg.eigh(j2c[k])
             log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
-                       w[0]/w[-1], numpy.count_nonzero(w<LINEAR_DEP_THR))
-            v = v[:,w>LINEAR_DEP_THR].T.conj()
-            v /= numpy.sqrt(w[w>LINEAR_DEP_THR]).reshape(-1,1)
+                       w[0]/w[-1], numpy.count_nonzero(w<mydf.linear_dep_threshold))
+            v = v[:,w>mydf.linear_dep_threshold].T.conj()
+            v /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
             feri['j2c/%d'%k] = v
             j2ctags.append('eig')
             nauxs.append(v.shape[0])
@@ -465,6 +465,7 @@ class DF(df.DF, aft.AFTDF):
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
                 'auxbasis'  : self.auxbasis,
+                'linear_dep_threshold': self.linear_dep_threshold,
                 '_cderi'     : self._cderi}
     def unpack_(self, dfdic):
         remote_cderi = dfdic.pop('_cderi')
