@@ -460,7 +460,6 @@ class DF(df.DF, aft.AFTDF):
                 'mesh'      : self.mesh,
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
-                'linear_dep_threshold': self.linear_dep_threshold,
                 'auxbasis'  : self.auxbasis,
                 'linear_dep_threshold': self.linear_dep_threshold,
                 '_cderi'     : self._cderi}
