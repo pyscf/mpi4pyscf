@@ -345,9 +345,11 @@ else:
 
 def _distribute_call(f_arg):
     module, name, reg_procs, args, kwargs = f_arg
+    dev = reg_procs
     if module is None:  # Master processor
         fn = name
-        dev = reg_procs
+    elif dev is None:
+        fn = getattr(importlib.import_module(module), name)
     else:
         from mpi4pyscf.tools import mpi
         dev = mpi._registry[reg_procs[mpi.rank]]
@@ -360,9 +362,12 @@ if rank == 0:
             if pool.worker_status == 'R':
 # A direct call if worker is not in pending mode
                 return f(dev, *args, **kwargs)
-            else:
+            elif hasattr(dev, '_reg_procs'):
                 return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
                                   (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+            else:
+                return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
+                                  (f.__module__, f.__name__, None, args, kwargs))
         return with_mpi
 else:
     def parallel_call(f):
