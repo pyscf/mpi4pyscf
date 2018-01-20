@@ -128,21 +128,17 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j2c_k = numpy.zeros_like(j2c[k])
         for p0, p1 in mydf.prange(0, ngrids, blksize):
             aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
-            kLR = (aoaux.real * coulG[p0:p1]).T
-            kLI = (aoaux.imag * coulG[p0:p1]).T
+            LkR = aoaux.real * coulG[p0:p1]
+            LkI = aoaux.imag * coulG[p0:p1]
             aoaux = None
-            if not kLR.flags.c_contiguous: kLR = lib.transpose(kLR.T)
-            if not kLI.flags.c_contiguous: kLI = lib.transpose(kLI.T)
 
-            kLR1 = numpy.asarray(kLR[:,naux:], order='C')
-            kLI1 = numpy.asarray(kLI[:,naux:], order='C')
             if is_zero(kpt):  # kpti == kptj
-                j2cR = lib.ddot(kLR1.T, kLR)
-                j2c_k[naux:] += lib.ddot(kLI1.T, kLI, 1, j2cR, 1)
+                j2c_k[naux:] += lib.ddot(LkR[naux:], LkR.T)
+                j2c_k[naux:] += lib.ddot(LkI[naux:], LkI.T)
             else:
-                j2cR, j2cI = zdotCN(kLR1.T, kLI1.T, kLR, kLI)
+                j2cR, j2cI = zdotCN(LkR[naux:], LkI[naux:], LkR.T, LkI.T)
                 j2c_k[naux:] += j2cR + j2cI * 1j
-            kLR = kLI = kLR1 = kLI1 = None
+            kLR = kLI = None
 
         j2c_k[:naux,naux:] = j2c_k[naux:,:naux].conj().T
         j2c[k] -= mpi.allreduce(j2c_k)
@@ -161,9 +157,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             w, v = scipy.linalg.eigh(j2c[k])
             log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
-                       w[0]/w[-1], numpy.count_nonzero(w<LINEAR_DEP_THR))
-            v = v[:,w>LINEAR_DEP_THR].T.conj()
-            v /= numpy.sqrt(w[w>LINEAR_DEP_THR]).reshape(-1,1)
+                       w[0]/w[-1], numpy.count_nonzero(w<mydf.linear_dep_threshold))
+            v = v[:,w>mydf.linear_dep_threshold].T.conj()
+            v /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
             feri['j2c/%d'%k] = v
             j2ctags.append('eig')
             nauxs.append(v.shape[0])
@@ -464,6 +460,7 @@ class DF(df.DF, aft.AFTDF):
                 'mesh'      : self.mesh,
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
+                'linear_dep_threshold': self.linear_dep_threshold,
                 'auxbasis'  : self.auxbasis,
                 '_cderi'     : self._cderi}
     def unpack_(self, dfdic):
@@ -504,6 +501,8 @@ class DF(df.DF, aft.AFTDF):
 
     get_eri = get_ao_eri = df_ao2mo.get_eri
     ao2mo = get_mo_eri = df_ao2mo.general
+
+    mpi_prange = prange = aft.AFTDF.mpi_prange
 
 
     def loop(self, serial_mode=True):

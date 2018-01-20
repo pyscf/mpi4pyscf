@@ -36,3 +36,23 @@ mf = pscf.RHF(cell)
 mf.exxdiv = 'ewald'
 mf.with_df = mydf
 mf.kernel()
+
+
+mydf = mpidf.DF(cell)
+mydf.auxbasis = 'weigend'
+mydf.mesh = [5] * 3
+
+mf = pscf.RHF(cell)
+mf.exxdiv = 'ewald'
+mf.with_df = mydf
+mf.kernel() # -299.323528879552
+
+
+mydf = mpidf.MDF(cell)
+mydf.auxbasis = 'weigend'
+mydf.mesh = [5] * 3
+
+mf = pscf.RHF(cell)
+mf.exxdiv = 'ewald'
+mf.with_df = mydf
+mf.kernel() # -299.328386756269
