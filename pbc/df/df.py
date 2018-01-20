@@ -462,6 +462,7 @@ class DF(df.DF, aft.AFTDF):
                 'blockdim'  : self.blockdim,
                 'linear_dep_threshold': self.linear_dep_threshold,
                 'auxbasis'  : self.auxbasis,
+                'linear_dep_threshold': self.linear_dep_threshold,
                 '_cderi'     : self._cderi}
     def unpack_(self, dfdic):
         remote_cderi = dfdic.pop('_cderi')

@@ -89,7 +89,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e_sph'):
     for k in range(nkpts):
         mat[k] = mpi.allgather(buf[k])
 
-    if rank == 0 and cell.dimension == 3:
+    if rank == 0 and cell.dimension == 3 and intor == 'int3c2e_sph':
         nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(cell.atom_charges())])
         nucbar *= numpy.pi/cell.vol
         ovlp = cell.pbc_intor('int1e_ovlp_sph', 1, lib.HERMITIAN, kpts)
