@@ -1,4 +1,9 @@
 # Must import every submodule before suspending the slave processes
+import pyscf
+from distutils.version import LooseVersion
+assert(LooseVersion(pyscf.__version__) >= LooseVersion('1.5'))
+del(LooseVersion)
+
 from . import lib
 from . import pbc
 

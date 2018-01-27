@@ -470,7 +470,7 @@ class DF(df.DF, aft.AFTDF):
 # work for a property method.
         self.__dict__.pop('auxbasis')
         self._auxbasis = dfdic['auxbasis']
-# Note when auxbasis was changed in the master processor, _cderi on master is
+# Note when auxbasis was changed in the master process, _cderi on master is
 # cleared.  Following to reset _cderi and _cderi_to_save when necessary.
         if remote_cderi is None and self._cderi is not None:
             self._cderi = None
@@ -505,14 +505,19 @@ class DF(df.DF, aft.AFTDF):
     mpi_prange = prange = aft.AFTDF.mpi_prange
 
 
-    def loop(self, serial_mode=True):
-        if serial_mode:  # The caller on master processor runs in serial mode.
-            return serial_loop(self)
+    def loop(self):
+        # mpi.pool.worker_status = P (pending) means the caller on master
+        # process runs in serial mode.
+        # 3-index tensor should be generated on each process and sent to
+        # the master process.  E.g. the call to with_df.loop in dfccsd
+        serial_mode = mpi.pool.worker_status == 'P'
+        if serial_mode:
+            return loop_yield_then_reduce(self)
         else:
             return df.DF.loop(self)
 
-    def get_naoaux(self, serial_mode=True):
-        if serial_mode:  # The caller on master processor runs in serial mode.
+    def get_naoaux(self):
+        if mpi.pool.worker_status == 'P':
             return get_naoaux(self)
         else:
             return df.DF.get_naoaux(self)
@@ -534,7 +539,7 @@ def _sync_mydf(mydf):
     return mydf.unpack_(comm.bcast(mydf.pack()))
 
 @mpi.reduced_yield
-def serial_loop(mydf):
+def loop_yield_then_reduce(mydf):
     for Lpq in df.DF.loop(mydf):
         yield Lpq
 

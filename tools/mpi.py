@@ -346,7 +346,7 @@ else:
 def _distribute_call(f_arg):
     module, name, reg_procs, args, kwargs = f_arg
     dev = reg_procs
-    if module is None:  # Master processor
+    if module is None:  # Master process
         fn = name
     elif dev is None:
         fn = getattr(importlib.import_module(module), name)
@@ -402,7 +402,7 @@ else:
 def _reduce_call(f_arg):
     from mpi4pyscf.tools import mpi
     module, name, reg_procs, args, kwargs = f_arg
-    if module is None:  # Master processor
+    if module is None:  # Master process
         fn = name
         dev = reg_procs
     else:

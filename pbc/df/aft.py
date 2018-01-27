@@ -160,14 +160,19 @@ class AFTDF(aft.AFTDF):
 
 
     def loop(self, serial_mode=True):
-        if serial_mode:  # The caller on master processor runs in serial mode.
-            return serial_loop(self)
+        # mpi.pool.worker_status = P (pending) means the caller on master
+        # process runs in serial mode.
+        # 3-index tensor should be generated on each process and sent to
+        # the master process.  E.g. the call to with_df.loop in dfccsd
+        serial_mode = mpi.pool.worker_status == 'P'
+        if serial_mode:
+            return loop_yield_then_reduce(self)
         else:
             return aft.AFTDF.loop(self)
 
     def get_naoaux(self, serial_mode=True):
         naux = aft.AFTDF.get_naoaux(self)
-        if serial_mode:  # The caller on master processor runs in serial mode.
+        if mpi.pool.worker_status == 'P':
             return naux
         else:
             ps = list(self.mpi_prange(0, naux))
@@ -175,7 +180,7 @@ class AFTDF(aft.AFTDF):
 
 
 @mpi.reduced_yield
-def serial_loop(mydf):
+def loop_yield_then_reduce(mydf):
     for Lpq in aft.AFTDF.loop(mydf):
         yield Lpq
 

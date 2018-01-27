@@ -412,14 +412,19 @@ class MDF(mdf.MDF, df.DF):
     ao2mo = get_mo_eri = mdf_ao2mo.general
 
 
-    def loop(self, serial_mode=True):
-        if serial_mode:  # The caller on master processor runs in serial mode.
-            return serial_loop(self)
+    def loop(self):
+        # mpi.pool.worker_status = P (pending) means the caller on master
+        # process runs in serial mode.
+        # 3-index tensor should be generated on each process and sent to
+        # the master process.  E.g. the call to with_df.loop in dfccsd
+        serial_mode = mpi.pool.worker_status == 'P'
+        if serial_mode:
+            return loop_yield_then_reduce(self)
         else:
             return mdf.MDF.loop(self)
 
-    def get_naoaux(self, serial_mode=True):
-        if serial_mode:  # The caller on master processor runs in serial mode.
+    def get_naoaux(self):
+        if mpi.pool.worker_status == 'P':
             return df.get_naoaux(self) + aft.AFTDF.get_naoaux(self)
         else:
             return df.DF.get_naoaux(self)
@@ -429,7 +434,7 @@ def _sync_mydf(mydf):
     return mydf.unpack_(comm.bcast(mydf.pack()))
 
 @mpi.reduced_yield
-def serial_loop(mydf):
+def loop_yield_then_reduce(mydf):
     for Lpq in mdf.MDF.loop(mydf):
         yield Lpq
 
