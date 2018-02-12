@@ -460,16 +460,12 @@ class DF(df.DF, aft.AFTDF):
                 'mesh'      : self.mesh,
                 'eta'       : self.eta,
                 'blockdim'  : self.blockdim,
-                'auxbasis'  : self.auxbasis,
+                '_auxbasis' : self._auxbasis,
                 'linear_dep_threshold': self.linear_dep_threshold,
                 '_cderi'     : self._cderi}
     def unpack_(self, dfdic):
         remote_cderi = dfdic.pop('_cderi')
         self.__dict__.update(dfdic)
-# auxbasis is a property method of GDF class, Note __dict__.update does not
-# work for a property method.
-        self.__dict__.pop('auxbasis')
-        self._auxbasis = dfdic['auxbasis']
 # Note when auxbasis was changed in the master process, _cderi on master is
 # cleared.  Following to reset _cderi and _cderi_to_save when necessary.
         if remote_cderi is None and self._cderi is not None:
