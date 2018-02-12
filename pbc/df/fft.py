@@ -167,6 +167,11 @@ def _sync_mydf(mydf):
 class FFTDF(fft.FFTDF):
     '''Density expansion on plane waves
     '''
+    def __init__(self, cell, kpts=numpy.zeros((1,3))):
+        if cell.dimension <= 2:
+            raise RuntimeError('MPI-FFTDF module does not support 0D/1D/2D low-dimension '
+                               'PBC system')
+        fft.FFTDF.__init__(self, cell, kpts)
 
     def pack(self):
         return {'verbose'   : self.verbose,

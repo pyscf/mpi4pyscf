@@ -19,6 +19,7 @@ from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
+from pyscf.pbc.gto.cell import _model_uniform_charge_SI_on_z
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -119,6 +120,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     else:
         feri = h5py.File(cderi_file, 'w')
 
+    if cell.dimension == 1 or cell.dimension == 2:
+        plain_ints = df._gaussian_int(fused_cell)
+
     mem_now = max(comm.allgather(lib.current_memory()[0]))
     max_memory = max(2000, mydf.max_memory - mem_now)
     blksize = max(2048, int(max_memory*.5e6/16/fused_cell.nao_nr()))
@@ -128,6 +132,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j2c_k = numpy.zeros_like(j2c[k])
         for p0, p1 in mydf.prange(0, ngrids, blksize):
             aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
+            if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
+                G0idx, SI_on_z = _model_uniform_charge_SI_on_z(cell, Gv[p0:p1])
+                aoaux[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, plain_ints)
             LkR = aoaux.real * coulG[p0:p1]
             LkI = aoaux.imag * coulG[p0:p1]
             aoaux = None
@@ -171,10 +178,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         dtype = 'f8'
     else:
         dtype = 'c16'
-    vbar = mydf.auxbar(fused_cell)
-    vbar = fuse(vbar)
-    ovlp = cell.pbc_intor('int1e_ovlp_sph', hermi=1, kpts=kptjs[aosym_s2])
-    ovlp = [lib.pack_tril(s) for s in ovlp]
     t1 = log.timer_debug1('aoaux and int2c', *t1)
 
 # Estimates the buffer size based on the last contraction in G-space.
@@ -264,6 +267,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         if is_zero(kpt):
             aosym = 's2'
+            vbar = fuse(mydf.auxbar(fused_cell))
+            ovlp = cell.pbc_intor('int1e_ovlp_sph', hermi=1, kpts=adapted_kptjs)
+            ovlp = [lib.pack_tril(s) for s in ovlp]
         else:
             aosym = 's1'
 
@@ -274,7 +280,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         for k, idx in enumerate(adapted_ji_idx):
             key = 'j3c-chunks/%d/%d' % (job_id, idx)
             v = numpy.asarray(feri[key])
-            if is_zero(kpt):
+            if is_zero(kpt) and cell.dimension == 3:
                 for i, c in enumerate(vbar):
                     if c != 0:
                         v[i] -= c * ovlp[k][i0*(i0+1)//2:i1*(i1+1)//2].ravel()
@@ -305,6 +311,23 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
+
+            if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
+                G0idx, SI_on_z = _model_uniform_charge_SI_on_z(cell, Gv[p0:p1])
+                if SI_on_z.size > 0:
+                    for k, aoao in enumerate(dat):
+                        aoao[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, ovlp[k])
+                        aux = fuse(ft_ao.ft_ao(fused_cell, Gv[p0:p1][G0idx]).T)
+                        vG_mod = numpy.einsum('ig,g,g->i', aux.conj(),
+                                              wcoulG[p0:p1][G0idx], SI_on_z)
+                        if gamma_point(adapted_kptjs[k]):
+                            j3cR[k][:naux] -= vG_mod[:,None].real * ovlp[k]
+                        else:
+                            tmp = vG_mod[:,None] * ovlp[k]
+                            j3cR[k][:naux] -= tmp.real
+                            j3cI[k][:naux] -= tmp.imag
+                        tmp = aux = vG_mod
+
             nG = p1 - p0
             for k, ji in enumerate(adapted_ji_idx):
                 aoao = dat[k].reshape(nG,ncol)
