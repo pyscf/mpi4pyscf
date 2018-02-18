@@ -19,7 +19,7 @@ from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
-from pyscf.pbc.gto.cell import _model_uniform_charge_SI_on_z
+from pyscf.pbc import gto as pbcgto
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -133,7 +133,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         for p0, p1 in mydf.prange(0, ngrids, blksize):
             aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
             if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
-                G0idx, SI_on_z = _model_uniform_charge_SI_on_z(cell, Gv[p0:p1])
+                G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv[p0:p1])
                 aoaux[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, plain_ints)
             LkR = aoaux.real * coulG[p0:p1]
             LkI = aoaux.imag * coulG[p0:p1]
@@ -313,7 +313,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                                         adapted_kptjs, out=buf)
 
             if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
-                G0idx, SI_on_z = _model_uniform_charge_SI_on_z(cell, Gv[p0:p1])
+                G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv[p0:p1])
                 if SI_on_z.size > 0:
                     for k, aoao in enumerate(dat):
                         aoao[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, ovlp[k])

@@ -16,7 +16,7 @@ from pyscf.pbc.df import incore
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import aft
 from pyscf.pbc.df import ft_ao
-from pyscf.pbc.gto.cell import _model_uniform_charge_SI_on_z
+from pyscf.pbc import gto as pbcgto
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -97,7 +97,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e_sph', aosym='s2', comp=1):
 
         if cell.dimension == 1 or cell.dimension == 2:
             Gv, Gvbase, kws = cell.get_Gv_weights(mydf.mesh)
-            G0idx, SI_on_z = _model_uniform_charge_SI_on_z(cell, Gv)
+            G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv)
             ZSI = numpy.einsum("i,ix->x", charges, cell.get_SI(Gv[G0idx]))
             ZSI -= numpy.einsum('i,xi->x', charges, ft_ao.ft_ao(nuccell, Gv[G0idx]))
             coulG = 4*numpy.pi / numpy.linalg.norm(Gv[G0idx], axis=1)**2
