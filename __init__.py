@@ -1,4 +1,7 @@
 # Must import every submodule before suspending the slave processes
+import pyscf
+assert(pyscf.__version__[:3] == '1.4')
+
 from . import lib
 from . import pbc
 
