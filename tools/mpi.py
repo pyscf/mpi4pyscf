@@ -20,6 +20,7 @@ if 'pool' not in _registry:
 
 comm = pool.comm
 rank = pool.rank
+INT_MAX = 2147483647
 
 def static_partition(tasks):
     size = len(tasks)
@@ -152,12 +153,26 @@ def work_stealing_partition(tasks, interval=.02):
                     proc_last, proc = proc, next_proc(proc)
                 yield task
 
+def _create_dtype(dat):
+    mpi_dtype = MPI._typedict[dat.dtype.char]
+    # the smallest power of 2 greater than dat.size/INT_MAX
+    deriv_dtype_len = 1 << max(0, dat.size.bit_length()-31)
+    deriv_dtype = mpi_dtype.Create_contiguous(deriv_dtype_len).Commit()
+    count, rest = dat.size.__divmod__(deriv_dtype_len)
+    return deriv_dtype, count, rest
+
 def bcast(buf, root=0):
     buf = numpy.asarray(buf, order='C')
     shape, dtype = comm.bcast((buf.shape, buf.dtype.char))
     if rank != root:
         buf = numpy.empty(shape, dtype=dtype)
-    comm.Bcast(buf, root)
+
+    if buf.size <= INT_MAX:
+        comm.Bcast(buf, root)
+    else:
+        deriv_dtype, count, rest = _create_dtype(buf)
+        comm.Bcast([buf, count, deriv_dtype], root)
+        comm.Bcast(buf[-rest*deriv_dtype.size:], root)
     return buf
 
 def reduce(sendbuf, op=MPI.SUM, root=0):
@@ -166,7 +181,14 @@ def reduce(sendbuf, op=MPI.SUM, root=0):
     _assert(sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype)
 
     recvbuf = numpy.zeros_like(sendbuf)
-    comm.Reduce(sendbuf, recvbuf, op, root)
+    if recvbuf.size <= INT_MAX:
+        comm.Reduce(sendbuf, recvbuf, op, root)
+    else:
+        send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
+        recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
+        for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
+            comm.Reduce(send_seg[p0:p1], recv_seg[p0:p1], op, root)
+
     if rank == root:
         return recvbuf
     else:
@@ -178,7 +200,13 @@ def allreduce(sendbuf, op=MPI.SUM):
     _assert(sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype)
 
     recvbuf = numpy.zeros_like(sendbuf)
-    comm.Allreduce(sendbuf, recvbuf, op)
+    if recvbuf.size <= INT_MAX:
+        comm.Allreduce(sendbuf, recvbuf, op)
+    else:
+        send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
+        recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
+        for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
+            comm.AllReduce(send_seg[p0:p1], recv_seg[p0:p1], op)
     return recvbuf
 
 def gather(sendbuf, root=0):
@@ -198,8 +226,9 @@ def gather(sendbuf, root=0):
     _assert(sendbuf.dtype.char == mpi_dtype or sendbuf.size == 0)
     if rank == root:
         size_dtype = comm.gather((sendbuf.size, mpi_dtype), root=root)
-        _assert(all(x[1] == mpi_dtype for x in size_dtype if x[0] > 0))
         counts = numpy.array([x[0] for x in size_dtype])
+        _assert(numpy.all(counts <= INT_MAX))
+        _assert(all(x[1] == mpi_dtype for x in size_dtype if x[0] > 0))
         displs = numpy.append(0, numpy.cumsum(counts[:-1]))
         recvbuf = numpy.empty(sum(counts), dtype=mpi_dtype)
         comm.Gatherv([sendbuf.ravel(), mpi_dtype],
@@ -213,9 +242,11 @@ def gather(sendbuf, root=0):
 def allgather(sendbuf):
     sendbuf = numpy.asarray(sendbuf, order='C')
     attr = comm.allgather((sendbuf.size, sendbuf.dtype.char))
-    counts = [x[0] for x in attr]
+    counts = numpy.array([x[0] for x in attr])
     mpi_dtype = numpy.result_type(*[x[1] for x in attr]).char
     _assert(sendbuf.dtype.char == mpi_dtype or sendbuf.size == 0)
+    _assert(numpy.all(counts <= INT_MAX))
+    _assert(all(x[1] == mpi_dtype for x in attr if x[0] > 0))
     displs = numpy.append(0, numpy.cumsum(counts[:-1]))
     recvbuf = numpy.empty(sum(counts), dtype=mpi_dtype)
     comm.Allgatherv([sendbuf.ravel(), mpi_dtype],
@@ -234,7 +265,7 @@ def alltoall(sendbuf, split_recvbuf=False):
         sdispls[sdispls>sendbuf.size] = sendbuf.size
         scounts = numpy.append(sdispls[1:]-sdispls[:-1], sendbuf.size-sdispls[-1])
     else:
-        assert(len(sendbuf) == pool.size)
+        _assert(len(sendbuf) == pool.size)
         mpi_dtype = comm.bcast(sendbuf[0].dtype.char)
         sendbuf = [numpy.asarray(x, mpi_dtype).ravel() for x in sendbuf]
         scounts = numpy.asarray([x.size for x in sendbuf])
@@ -243,6 +274,9 @@ def alltoall(sendbuf, split_recvbuf=False):
 
     rcounts = numpy.asarray(comm.alltoall(scounts))
     rdispls = numpy.append(0, numpy.cumsum(rcounts[:-1]))
+
+    _assert(numpy.all(scounts <= INT_MAX))
+    _assert(numpy.all(rcounts <= INT_MAX))
 
     recvbuf = numpy.empty(sum(rcounts), dtype=mpi_dtype)
     comm.Alltoallv([sendbuf.ravel(), scounts, sdispls, mpi_dtype],
@@ -259,12 +293,22 @@ def sendrecv(sendbuf, source=0, dest=0):
     if rank == source:
         sendbuf = numpy.asarray(sendbuf, order='C')
         comm.send((sendbuf.shape, sendbuf.dtype), dest=dest)
-        comm.Send(sendbuf, dest=dest)
+        if sendbuf.size <= INT_MAX:
+            comm.Send(sendbuf, dest=dest)
+        else:
+            send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
+            for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
+                comm.Send(send_seg[p0:p1], dest=dest)
         return sendbuf
     elif rank == dest:
         shape, dtype = comm.recv(source=source)
         recvbuf = numpy.empty(shape, dtype=dtype)
-        comm.Recv(recvbuf, source=source)
+        if sendbuf.size <= INT_MAX:
+            comm.Recv(recvbuf, source=source)
+        else:
+            recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
+            for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
+                comm.Recv(recv_seg[p0:p1], source=source)
         return recvbuf
 
 def _assert(condition):
