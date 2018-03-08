@@ -110,7 +110,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug('Num uniq kpts %d', len(uniq_kpts))
     log.debug2('uniq_kpts %s', uniq_kpts)
     # j2c ~ (-kpt_ji | kpt_ji)
-    j2c = fused_cell.pbc_intor('int2c2e_sph', hermi=1, kpts=uniq_kpts)
+    j2c = fused_cell.pbc_intor('int2c2e', hermi=1, kpts=uniq_kpts)
     j2ctags = []
     nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
@@ -196,12 +196,12 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log.debug2('j3c_jobs %s', j3c_jobs)
 
     if j_only:
-        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's2', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e', 's2', 1, kptij_lst)
     else:
-        int3c = wrap_int3c(cell, fused_cell, 'int3c2e_sph', 's1', 1, kptij_lst)
+        int3c = wrap_int3c(cell, fused_cell, 'int3c2e', 's1', 1, kptij_lst)
         idxb = numpy.tril_indices(nao)
         idxb = (idxb[0] * nao + idxb[1]).astype('i')
-    aux_loc = fused_cell.ao_loc_nr('ssc' in 'int3c2e_sph')
+    aux_loc = fused_cell.ao_loc_nr('ssc' in 'int3c2e')
 
     def gen_int3c(auxcell, job_id, ish0, ish1):
         dataname = 'j3c-chunks/%d' % job_id
@@ -267,8 +267,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         if is_zero(kpt):
             aosym = 's2'
-            vbar = fuse(mydf.auxbar(fused_cell))
-            ovlp = cell.pbc_intor('int1e_ovlp_sph', hermi=1, kpts=adapted_kptjs)
+            vbar = mydf.auxbar(fused_cell)
+            ovlp = cell.pbc_intor('int1e_ovlp', hermi=1, kpts=adapted_kptjs)
             ovlp = [lib.pack_tril(s) for s in ovlp]
         else:
             aosym = 's1'
