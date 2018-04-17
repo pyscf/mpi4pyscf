@@ -86,20 +86,22 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
     blksize = int(max(max_memory*1e6/16/2/ngs/nao, 1))
     vR_dm = numpy.empty((nset,nao,ngs), dtype=numpy.complex128)
     for k2, ao_k2 in mydf.mpi_aoR_loop(gs, kpts):
+        ao_k2T = ao_k2.T
         kpt2 = kpts[k2]
-        ao_dms = [lib.dot(dms[i,k2], ao_k2.conj().T) for i in range(nset)]
+        ao_dms = [lib.dot(dms[i,k2], ao_k2T.conj()) for i in range(nset)]
 
         for k1, ao_k1 in mydf.aoR_loop(gs, kpts_band):
+            ao_k1T = ao_k1.T
             kpt1 = kpts_band[k1]
             mydf.exxdiv = exxdiv
             coulG = tools.get_coulG(cell, kpt2-kpt1, True, mydf, gs)
             if is_zero(kpt1-kpt2):
                 expmikr = numpy.array(1.)
             else:
-                expmikr = numpy.exp(-1j * numpy.dot(coords, kpt2-kpt1))[:,None]
+                expmikr = numpy.exp(-1j * numpy.dot(coords, kpt2-kpt1))
 
             for p0, p1 in lib.prange(0, nao, blksize):
-                rho1 = numpy.einsum('gi,gj->ijg', ao_k1[:,p0:p1].conj()*expmikr, ao_k2)
+                rho1 = numpy.einsum('ig,jg->ijg', ao_k1T[p0:p1].conj()*expmikr, ao_k2T)
                 vG = tools.fft(rho1.reshape(-1,ngs), gs)
                 vG *= coulG
                 vR = tools.ifft(vG, gs).reshape(p1-p0,nao,ngs)
