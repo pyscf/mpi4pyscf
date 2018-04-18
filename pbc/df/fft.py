@@ -53,9 +53,13 @@ def get_nuc(mydf, kpts):
     vneG = rhoG * coulG
     vneR = tools.ifft(vneG, mydf.mesh).real
 
-    vne = [lib.dot(aoR.T.conj()*vneR, aoR)
-           for k, aoR in mydf.mpi_aoR_loop(mesh, kpts_lst)]
-    vne = mpi.gather(lib.asarray(vne, dtype=dtype))
+    vne = [0] * len(kpts_lst)
+    for ao_ks_etc, p0, p1 in mydf.mpi_aoR_loop(mydf.grids, kpts_lst):
+        ao_ks = ao_ks_etc[0]
+        for k, ao in enumerate(ao_ks):
+            vne[k] += lib.dot(ao.T.conj()*vneR[p0:p1], ao)
+        ao = ao_ks = None
+    vne = mpi.reduce(lib.asarray(vne))
 
     if rank == 0:
         if kpts is None or numpy.shape(kpts) == (3,):
@@ -76,20 +80,25 @@ def get_pp(mydf, kpts=None):
     else:
         dtype = numpy.complex128
 
+    low_dim_ft_type = mydf.low_dim_ft_type
     mesh = mydf.mesh
     SI = cell.get_SI()
     Gv = cell.get_Gv(mesh)
-    vpplocG = pseudo.get_vlocG(cell, Gv)
+    vpplocG = pseudo.get_vlocG(cell, Gv, low_dim_ft_type)
     vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
-    vpplocG[0] = numpy.sum(pseudo.get_alphas(cell)) # from get_jvloc_G0 function
+    vpplocG[0] = numpy.sum(pseudo.get_alphas(cell, low_dim_ft_type))
     ngrids = len(vpplocG)
     nao = cell.nao_nr()
 
     # vpploc evaluated in real-space
     vpplocR = tools.ifft(vpplocG, mesh).real
-    vpp = [lib.dot(aoR.T.conj()*vpplocR, aoR)
-           for k, aoR in mydf.mpi_aoR_loop(mesh, kpts_lst)]
-    vpp = mpi.gather(lib.asarray(vpp, dtype=dtype))
+    vpp = [0] * len(kpts_lst)
+    for ao_ks_etc, p0, p1 in mydf.mpi_aoR_loop(mydf.grids, kpts_lst):
+        ao_ks = ao_ks_etc[0]
+        for k, ao in enumerate(ao_ks):
+            vpp[k] += lib.dot(ao.T.conj()*vpplocR[p0:p1], ao)
+        ao = ao_ks = None
+    vpp = mpi.reduce(lib.asarray(vpp))
 
     # vppnonloc evaluated in reciprocal space
     fakemol = gto.Mole()
@@ -133,18 +142,19 @@ def get_pp(mydf, kpts=None):
                     #:SPG_lm_aoG = numpy.einsum('nmg,gp->nmp', SPG_lmi, aokG)
                     #:tmp = numpy.einsum('ij,jmp->imp', hl, SPG_lm_aoG)
                     #:vppnl += numpy.einsum('imp,imq->pq', SPG_lm_aoG.conj(), tmp)
-            SPG_lmi = buf[:p1]
-            SPG_lmi *= SI[ia].conj()
-            SPG_lm_aoGs = lib.zdot(SPG_lmi, aokG)
-            p1 = 0
-            for l, proj in enumerate(pp[5:]):
-                rl, nl, hl = proj
-                if nl > 0:
-                    p0, p1 = p1, p1+nl*(l*2+1)
-                    hl = numpy.asarray(hl)
-                    SPG_lm_aoG = SPG_lm_aoGs[p0:p1].reshape(nl,l*2+1,-1)
-                    tmp = numpy.einsum('ij,jmp->imp', hl, SPG_lm_aoG)
-                    vppnl += numpy.einsum('imp,imq->pq', SPG_lm_aoG.conj(), tmp)
+            if p1 > 0:
+                SPG_lmi = buf[:p1]
+                SPG_lmi *= SI[ia].conj()
+                SPG_lm_aoGs = lib.zdot(SPG_lmi, aokG)
+                p1 = 0
+                for l, proj in enumerate(pp[5:]):
+                    rl, nl, hl = proj
+                    if nl > 0:
+                        p0, p1 = p1, p1+nl*(l*2+1)
+                        hl = numpy.asarray(hl)
+                        SPG_lm_aoG = SPG_lm_aoGs[p0:p1].reshape(nl,l*2+1,-1)
+                        tmp = numpy.einsum('ij,jmp->imp', hl, SPG_lm_aoG)
+                        vppnl += numpy.einsum('imp,imq->pq', SPG_lm_aoG.conj(), tmp)
         return vppnl * (1./ngrids**2)
 
     vppnl = []
@@ -182,37 +192,38 @@ class FFTDF(fft.FFTDF):
         self.__dict__.update(dfdic)
         return self
 
-    def mpi_aoR_loop(self, mesh=None, kpts=None, kpts_band=None):
-        cell = self.cell
+    def mpi_aoR_loop(self, grids=None, kpts=None, deriv=0):
+        if grids is None:
+            grids = self.grids
+            cell = self.cell
+        else:
+            cell = grids.cell
+        if grids.non0tab is None:
+            grids.build(with_non0tab=True)
+
         if kpts is None: kpts = self.kpts
         kpts = numpy.asarray(kpts)
 
-        if mesh is None:
-            mesh = numpy.asarray(self.mesh)
-        else:
-            mesh = numpy.asarray(mesh)
-            if any(mesh != self.mesh):
-                self.non0tab = None
-            self.mesh = mesh
-
+        max_memory = max(2000, self.max_memory-lib.current_memory()[0])
         ni = self._numint
-        coords = cell.gen_uniform_grids(mesh)
-        if self.non0tab is None:
-            self.non0tab = ni.make_mask(cell, coords)
-        if kpts_band is None:
-            aoR = ni.eval_ao(cell, coords, kpts, non0tab=self.non0tab)
-            for k in mpi.static_partition(range(len(kpts))):
-                yield k, aoR[k]
-        else:
-            aoR = ni.eval_ao(cell, coords, kpts_band, non0tab=self.non0tab)
-            if kpts_band.ndim == 1:
-                if rank == 0:
-                    yield 0, aoR
-                else:
-                    return
-            else:
-                for k in mpi.static_partition(range(len(kpts_band))):
-                    yield k, aoR[k]
+        nao = cell.nao_nr()
+        ngrids = grids.weights.size
+        nblks = (ngrids+gen_grid.BLKSIZE-1)//gen_grid.BLKSIZE
+        mpi_size = mpi.pool.size
+        step = (nblks+mpi_size-1) // mpi_size * gen_grid.BLKSIZE
+        start = min(ngrids, rank * step)
+        stop = min(ngrids, start + step)
+        grids = copy.copy(grids)
+        grids.coords = grids.coords[start:stop]
+        grids.weights = grids.weights[start:stop]
+        grids.non0tab = grids.non0tab[start:stop]
+
+        p1 = start
+        for ao_k1_etc in ni.block_loop(cell, grids, nao, deriv, kpts,
+                                       max_memory=max_memory):
+            coords = ao_k1_etc[4]
+            p0, p1 = p1, p1 + coords.shape[0]
+            yield ao_k1_etc, p0, p1
 
     get_pp = get_pp
     get_nuc = get_nuc
