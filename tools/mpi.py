@@ -71,7 +71,7 @@ def work_share_partition(tasks, interval=.02, loadmin=1):
                 comm.send(load, 0, tag=INQUIRY)
             if comm.Iprobe(source=0, tag=TASK):
                 tasks.append(comm.recv(source=0, tag=TASK))
-                if tasks[-1] == 'OUT_OF_TASK':
+                if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
                     return
             time.sleep(interval)
 
@@ -81,7 +81,7 @@ def work_share_partition(tasks, interval=.02, loadmin=1):
     while True:
         if tasks:
             task = tasks.pop(0)
-            if task == 'OUT_OF_TASK':
+            if isinstance(task, str) and task == 'OUT_OF_TASK':
                 tasks_handler.join()
                 return
             yield task
@@ -94,11 +94,11 @@ def work_stealing_partition(tasks, interval=.02):
             time.sleep(interval)
             while comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
                 src, req = comm.recv(source=MPI.ANY_SOURCE, tag=INQUIRY)
-                if req == 'STOP_DAEMON':
+                if isinstance(req, str) and req == 'STOP_DAEMON':
                     return
                 elif tasks:
                     comm.send(tasks.pop(), src, tag=TASK)
-                elif src == 0 and req == 'ALL_DONE':
+                elif src == 0 and isinstance(req, str) and req == 'ALL_DONE':
                     comm.send(out_of_task[0], src, tag=TASK)
                 elif out_of_task[0]:
                     comm.send('OUT_OF_TASK', src, tag=TASK)
@@ -139,10 +139,10 @@ def work_stealing_partition(tasks, interval=.02):
         while True:
             comm.send((rank,None), proc, tag=INQUIRY)
             task = comm.recv(source=proc, tag=TASK)
-            if task == 'OUT_OF_TASK':
+            if isinstance(task, str) and task == 'OUT_OF_TASK':
                 prepare_to_stop()
                 return
-            elif task == 'BYPASS':
+            elif isinstance(task, str) and task == 'BYPASS':
                 if proc == proc_last:
                     prepare_to_stop()
                     return
