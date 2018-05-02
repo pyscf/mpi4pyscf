@@ -19,7 +19,7 @@ from pyscf.pbc.df import aft
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
 from mpi4pyscf.pbc.df import aft_jk
-#from mpi4pyscf.pbc.df import aft_ao2mo
+from mpi4pyscf.pbc.df import aft_ao2mo
 
 comm = mpi.comm
 rank = mpi.rank
@@ -135,6 +135,9 @@ class AFTDF(aft.AFTDF):
     _int_nuc_vloc = _int_nuc_vloc
     get_nuc = get_nuc
     get_pp = get_pp
+
+    get_eri = get_ao_eri = aft_ao2mo.get_eri
+    ao2mo = get_mo_eri = aft_ao2mo.general
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
                with_j=True, with_k=True, exxdiv='ewald'):
