@@ -6,6 +6,7 @@ del(LooseVersion)
 
 from . import lib
 from . import pbc
+from . import cc
 
 
 # NOTE: suspend all slave processes at last
