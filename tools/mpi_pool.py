@@ -15,7 +15,7 @@ import imp
 import importlib
 import types
 import marshal
-#import traceback
+import traceback
 from mpi4py import MPI
 
 
@@ -94,7 +94,7 @@ class MPIPool(object):
                 if sys.version_info < (3,4):
                     if not imp.lock_held():
                         imp.acquire_lock()
-                sys.exit(0)
+                return
 
             # Check if message is special type containing new function
             # to be applied

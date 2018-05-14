@@ -140,3 +140,15 @@ class Logger(logger.Logger):
     alltimer_debug1 = alltimer_debug1
     alltimer_debug2 = alltimer_debug2
 
+def new_logger(rec=None, verbose=None):
+    if isinstance(verbose, Logger):
+        log = verbose
+    elif isinstance(verbose, int):
+        if hasattr(rec, 'stdout'):
+            log = Logger(rec.stdout, verbose)
+        else:
+            log = Logger(sys.stdout, verbose)
+    else:
+        log = Logger(rec.stdout, rec.verbose)
+    return log
+

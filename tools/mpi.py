@@ -211,7 +211,7 @@ def allreduce(sendbuf, op=MPI.SUM):
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
     for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX-7):
-        comm.AllReduce(send_seg[p0:p1], recv_seg[p0:p1], op)
+        comm.Allreduce(send_seg[p0:p1], recv_seg[p0:p1], op)
     return recvbuf
 
 def gather(sendbuf, root=0):
@@ -230,7 +230,7 @@ def gather(sendbuf, root=0):
     size_dtype = comm.allgather((sendbuf.size, sendbuf.dtype.char))
     counts = numpy.array([x[0] for x in size_dtype])
 
-    mpi_dtype = numpy.result_type(*[x[1] for x in size_dtype])
+    mpi_dtype = numpy.result_type(*[x[1] for x in size_dtype]).char
     _assert(sendbuf.dtype == mpi_dtype or sendbuf.size == 0)
 
     if rank == root:
@@ -249,11 +249,13 @@ def gather(sendbuf, root=0):
                          [recv_seg, counts_seg, displs+p0, mpi_dtype], root)
         return recvbuf.reshape((-1,) + sendbuf.shape[1:])
     else:
+        send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
         for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX-7):
             counts_seg = counts - p0
             counts_seg[counts_seg<0] = 0
             comm.Gatherv([send_seg[p0:p1], mpi_dtype], None, root)
         return sendbuf
+
 
 def allgather(sendbuf):
     sendbuf = numpy.asarray(sendbuf, order='C')
@@ -272,8 +274,8 @@ def allgather(sendbuf):
     for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX-7):
         counts_seg = counts - p0
         counts_seg[counts_seg<0] = 0
-        comm.AllGatherv([send_seg[p0:p1], mpi_dtype],
-                        [recv_seg, counts_seg, displs+p0, mpi_dtype], root)
+        comm.Allgatherv([send_seg[p0:p1], mpi_dtype],
+                        [recv_seg, counts_seg, displs+p0, mpi_dtype])
     shape = comm.bcast(sendbuf.shape)
     return recvbuf.reshape((-1,) + shape[1:])
 
@@ -383,7 +385,15 @@ def del_registry(reg_procs):
 def _init_on_workers(f_arg):
     from mpi4pyscf.tools import mpi
     module, name, args, kwargs = f_arg
-    if module is None:  # master proccess
+    if args is None and kwargs is None:
+        if module is None:  # master proccess
+            obj = name
+            mpi.comm.bcast(obj.pack())
+        else:
+            cls = getattr(importlib.import_module(module), name)
+            obj = cls.__new__(cls)
+            obj.unpack_(mpi.comm.bcast(None))
+    elif module is None:  # master proccess
         obj = name
     else:
         from pyscf.gto import mole
@@ -405,7 +415,7 @@ def _init_on_workers(f_arg):
 
 if rank == 0:
     from pyscf.gto import mole
-    def _init_and_register(cls):
+    def _init_and_register(cls, with_init_args):
         old_init = cls.__init__
         def init(obj, *args, **kwargs):
             old_init(obj, *args, **kwargs)
@@ -420,9 +430,12 @@ if rank == 0:
                     regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
                                       (cls.__module__, cls.__name__,
                                        (args[0].dumps(),)+args[1:], kwargs))
-                else:
+                elif with_init_args:
                     regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
                                       (cls.__module__, cls.__name__, args, kwargs))
+                else:
+                    regs = pool.apply(_init_on_workers, (None, obj, None, None),
+                                      (cls.__module__, cls.__name__, None, None))
 
                 # Keep track of the object in a global registry.  The object can
                 # be accessed from global registry on workers.
@@ -433,14 +446,14 @@ if rank == 0:
     def _with_exit(obj):
         obj._reg_procs = del_registry(obj._reg_procs)
 
-    def register_class(cls):
-        cls.__init__ = _init_and_register(cls)
+    def register_class(cls, with_init_args=True):
+        cls.__init__ = _init_and_register(cls, with_init_args)
         cls.__enter__ = _with_enter
         cls.__exit__ = _with_exit
         cls.close = _with_exit
         return cls
 else:
-    def register_class(cls):
+    def register_class(cls, with_init_args=True):
         return cls
 
 def _distribute_call(f_arg):

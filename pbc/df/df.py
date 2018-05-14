@@ -299,7 +299,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         wcoulG = mydf.weighted_coulG(kpt, False, mesh)
         fused_cell_slice = (auxcell.nbas, fused_cell.nbas)
-        shls_slice = (sh0, sh1, 0, cell.nbas)
+        if aosym == 's2':
+            shls_slice = (sh0, sh1, 0, sh1)
+        else:
+            shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngrids, Gblksize):
             Gaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], fused_cell_slice, b,
                                gxyz[p0:p1], Gvbase, kpt)

@@ -239,7 +239,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         buf = numpy.empty(nkptj*ncol*Gblksize, dtype=numpy.complex128)
         log.alldebug2('    blksize (%d,%d)', Gblksize, ncol)
 
-        shls_slice = (sh0, sh1, 0, cell.nbas)
+        if aosym == 's2':
+            shls_slice = (sh0, sh1, 0, sh1)
+        else:
+            shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngrids, Gblksize):
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,

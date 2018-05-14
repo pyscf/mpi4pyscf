@@ -14,6 +14,7 @@ from .tools import mpi
 if not mpi.pool.is_master():
     import sys
     import imp
+    import traceback
 # Handle global import lock for multithreading, see
 #   http://stackoverflow.com/questions/12389526/import-inside-of-a-python-thread
 #   https://docs.python.org/3.4/library/imp.html#imp.lock_held
@@ -23,7 +24,12 @@ if not mpi.pool.is_master():
         if imp.lock_held():
             imp.release_lock()
 
-    mpi.pool.wait()
+    try:
+        mpi.pool.wait()
+    except BaseException as err:
+        traceback.print_exc(err)
+        mpi.comm.Abort()
+        exit(1)
 
     if sys.version_info < (3,4):
         if not imp.lock_held():
