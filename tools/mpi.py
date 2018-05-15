@@ -311,8 +311,8 @@ def alltoall(sendbuf, split_recvbuf=False):
         rcounts_seg = rcounts - p0
         scounts_seg[scounts_seg<0] = 0
         rcounts_seg[rcounts_seg<0] = 0
-        comm.Alltoallv([send_seg[p0:p1], scounts, sdispls+p0, mpi_dtype],
-                       [recv_seg[p0:p1], rcounts, rdispls+p0, mpi_dtype])
+        comm.Alltoallv([send_seg[p0:p1], scounts_seg, sdispls+p0, mpi_dtype],
+                       [recv_seg[p0:p1], rcounts_seg, rdispls+p0, mpi_dtype])
 
     if split_recvbuf:
         return [recvbuf[p0:p0+c] for p0,c in zip(rdispls,rcounts)]
@@ -338,7 +338,7 @@ def sendrecv(sendbuf, source=0, dest=0):
             comm.Recv(recv_seg[p0:p1], source=source)
         return recvbuf
 
-def rotate(sendbuf):
+def rotate(sendbuf, blocking=True):
     '''On every process, pass the sendbuf to the next process.
     Node-ID  Before-rotate  After-rotate
     node-0   buf-0          buf-1
@@ -360,12 +360,19 @@ def rotate(sendbuf):
         next_node = rank + 1
 
     if isinstance(sendbuf, numpy.ndarray):
-        if rank % 2 == 0:
-            sendrecv(sendbuf, rank, prev_node)
-            recvbuf = sendrecv(None, next_node, rank)
+        if blocking:
+            if rank % 2 == 0:
+                sendrecv(sendbuf, rank, prev_node)
+                recvbuf = sendrecv(None, next_node, rank)
+            else:
+                recvbuf = sendrecv(None, next_node, rank)
+                sendrecv(sendbuf, rank, prev_node)
         else:
+            handler = lib.ThreadWithTraceBack(target=sendrecv,
+                                              args=(sendbuf, rank, prev_node))
+            handler.start()
             recvbuf = sendrecv(None, next_node, rank)
-            sendrecv(sendbuf, rank, prev_node)
+            handler.join()
     else:
         if rank % 2 == 0:
             comm.send(sendbuf, dest=next_node)

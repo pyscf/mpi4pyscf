@@ -33,9 +33,9 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
         mycc.ao2mo(mycc.mo_coeff)
         eris = mycc._eris
     if t1 is None and t2 is None:
-        t1, t2 = mycc.get_init_guess()
+        t1, t2 = mycc.get_init_guess(eris)
     elif t2 is None:
-        t2 = mycc.get_init_guess()[1]
+        t2 = mycc.get_init_guess(eris)[1]
 
     eold = 0
     vec_old = 0
@@ -69,6 +69,7 @@ def update_amps(mycc, t1, t2, eris):
     time0 = time.clock(), time.time()
     log = logger.Logger(mycc.stdout, mycc.verbose)
     fock = eris.fock
+    cpu1 = time0
 
     t1T = t1.T
     t2T = numpy.asarray(t2.transpose(2,3,0,1), order='C')
@@ -90,7 +91,9 @@ def update_amps(mycc, t1, t2, eris):
     tau  = t2T * .5
     tau += numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
     for task_id, tau, p0, p1 in _rotate_vir_block(tau):
+        cpu1 = log.timer('aaa0   %d %s' % (task_id, lib.current_memory()), *cpu1)
         wVooV += lib.einsum('bkic,cajk->bija', eris_voov[:,:,:,p0:p1], tau)
+        cpu1 = log.timer('aaa1   %d %s' % (task_id, lib.current_memory()), *cpu1)
     fswap['wVooV1'] = wVooV
     wVooV = tau = None
 
@@ -99,7 +102,9 @@ def update_amps(mycc, t1, t2, eris):
     tau  = t2T.transpose(2,0,3,1) - t2T.transpose(3,0,2,1)*.5
     tau -= numpy.einsum('ai,bj->jaib', t1T[vloc0:vloc1], t1T)
     for task_id, tau, p0, p1 in _rotate_vir_block(tau):
+        cpu1 = log.timer('bbb0   %d %s' % (task_id, lib.current_memory()), *cpu1)
         wVOov += lib.einsum('dlkc,kcjb->dljb', eris_VOov[:,:,:,p0:p1], tau)
+        cpu1 = log.timer('bbb1   %d %s' % (task_id, lib.current_memory()), *cpu1)
     fswap['wVOov1'] = wVOov
     wVOov = tau = eris_VOov = eris_voov = None
 
@@ -130,29 +135,33 @@ def update_amps(mycc, t1, t2, eris):
     log.debug1('pass 1, max_memory %d MB,  nocc,nvir = %d,%d  blksize = %d',
                max_memory, nocc, nvir, blksize)
     nvir_pair = nvir * (nvir+1) // 2
-    def load_ovvv(p0, p1, buf):
+    def load_ovvv(p0, p1):
         if p0 < p1:
             buf[:p1-p0] = eris.ovvv[:,p0:p1].transpose(1,0,2)
 
     fwVOov = fswap.create_dataset('wVOov', (nvir_seg,nocc,nocc,nvir), 'f8')
     wVooV = numpy.zeros((nvir_seg,nocc,nocc,nvir))
+    cpu1 = log.timer('ccc      %s' % str(lib.current_memory()), *cpu1)
 
     buf = numpy.empty((blksize,nocc,nvir_pair))
     with lib.call_in_background(load_ovvv) as prefetch:
-        load_ovvv(0, min(nvir_seg, blksize), buf)
+        load_ovvv(0, min(nvir_seg, blksize))
         for p0, p1 in lib.prange(vloc0, vloc1, blksize):
             i0, i1 = p0 - vloc0, p1 - vloc0
             eris_vovv, buf = buf[:p1-p0], numpy.empty_like(buf)
-            prefetch(i1, min(nvir_seg, i1+blksize), buf)
+            prefetch(i1, min(nvir_seg, i1+blksize))
+            cpu1 = log.timer('cc1     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
             eris_vovv = lib.unpack_tril(eris_vovv.reshape((p1-p0)*nocc,nvir_pair))
             eris_vovv = eris_vovv.reshape(p1-p0,nocc,nvir,nvir)
 
             fvv_priv += 2*numpy.einsum('ck,ckab->ab', t1T[p0:p1], eris_vovv)
             fvv_priv[:,p0:p1] -= numpy.einsum('ck,bkca->ab', t1T, eris_vovv)
+            cpu1 = log.timer('cc2     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
             # Partition on index 0?
             vovv = eris_vovv.transpose(2,1,0,3)
+            log.debug('vovv shape %s' % str([vovv[q0:q1].shape for q0, q1 in vlocs]))
             vovv = mpi.alltoall([vovv[q0:q1] for q0, q1 in vlocs], split_recvbuf=True)
             vovv = [x.reshape(nvir_seg,nocc,-1,nvir) for x in vovv]
             if not mycc.direct:
@@ -161,10 +170,12 @@ def update_amps(mycc, t1, t2, eris):
                     tmp = lib.einsum('bkcd,cdij->bkij', vovv[task_id], tau)
                     t2Tnew -= lib.einsum('ak,bkij->baji', t1T, tmp)
                 tau = tmp = None
+            cpu1 = log.timer('cc3     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
             for task_id, (q0, q1) in enumerate(comm.allgather((p0,p1))):
                 wVooV -= lib.einsum('cj,bica->bija', t1T[q0:q1], vovv[task_id])
             vovv = None
+            cpu1 = log.timer('cc4     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
             theta  = t2T[i0:i1].transpose(0,2,1,3) * 2
             theta -= t2T[i0:i1].transpose(0,3,1,2)
@@ -173,6 +184,7 @@ def update_amps(mycc, t1, t2, eris):
             fwVOov[i0:i1] = lib.einsum('biac,cj->bija', eris_vovv, t1T)
             eris_voov = eris_VOov = None
             time1 = log.timer_debug1('vovv [%d:%d]'%(p0, p1), *time1)
+            cpu1 = log.timer('cc5     %d   %s' % (p0, lib.current_memory()), *cpu1)
     fswap['wVooV'] = wVooV
     wVooV = None
 
@@ -196,6 +208,7 @@ def update_amps(mycc, t1, t2, eris):
         tmp = lib.einsum('al,jaik->lkji', t1T[p0:p1], eris_ovoo)
         woooo += tmp + tmp.transpose(1,0,3,2)
         tmp = None
+        cpu1 = log.timer('dd1     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
         wVOov -= lib.einsum('jbik,ak->bjia', eris_ovoo, t1T)
         t2Tnew[i0:i1] += wVOov.transpose(0,3,1,2)
@@ -228,6 +241,7 @@ def update_amps(mycc, t1, t2, eris):
         tau = theta = None
 
         wVOov += wVooV*.5  #: bjia + bija*.5
+        cpu1 = log.timer('dd2     %d   %s' % (p0, lib.current_memory()), *cpu1)
 
         tau = t2T[i0:i1] + numpy.einsum('ai,bj->abij', t1T[p0:p1], t1T)
         woooo += lib.einsum('abij,aklb->ijkl', tau, eris_voov)
@@ -235,23 +249,29 @@ def update_amps(mycc, t1, t2, eris):
 
         wVooV += fswap['wVooV1'][i0:i1]
         fswap['wVooV1'][i0:i1] = wVooV
+        cpu1 = log.timer('dd3     %d   %s' % (p0, lib.current_memory()), *cpu1)
         wVOov += fswap['wVOov1'][i0:i1]
         fswap['wVOov1'][i0:i1] = wVOov
+        cpu1 = log.timer('dd4     %d   %s' % (p0, lib.current_memory()), *cpu1)
         eris_VOov = wVOov = wVooV = None
         time1 = log.timer_debug1('voov [%d:%d]'%(p0, p1), *time1)
 
     wVooV = numpy.asarray(fswap['wVooV1'])
     for task_id, wVooV, p0, p1 in _rotate_vir_block(wVooV):
+        cpu1 = log.timer('eee0     %d %s' % (task_id, lib.current_memory()), *cpu1)
         tmp = lib.einsum('ackj,ckib->ajbi', t2T[:,p0:p1], wVooV)
         t2Tnew += tmp.transpose(0,2,3,1)
         t2Tnew += tmp.transpose(0,2,1,3) * .5
+        cpu1 = log.timer('eee1     %d %s' % (task_id, lib.current_memory()), *cpu1)
     wVooV = tmp = None
 
     wVOov = numpy.asarray(fswap['wVOov1'])
     theta  = t2T * 2
     theta -= t2T.transpose(0,1,3,2)
     for task_id, wVOov, p0, p1 in _rotate_vir_block(wVOov):
+        cpu1 = log.timer('fff0     %d %s' % (task_id, lib.current_memory()), *cpu1)
         t2Tnew += lib.einsum('acik,ckjb->abij', theta[:,p0:p1], wVOov)
+        cpu1 = log.timer('fff1     %d %s' % (task_id, lib.current_memory()), *cpu1)
     wVOov = theta = None
     fwVOov = fswap = None
 
@@ -263,7 +283,9 @@ def update_amps(mycc, t1, t2, eris):
     t1T_priv[vloc0:vloc1] += numpy.einsum('jb,abji->ai', fov, theta)
     ovoo = numpy.asarray(eris.ovoo)
     for task_id, ovoo, p0, p1 in _rotate_vir_block(ovoo):
+        cpu1 = log.timer('ggg0     %d %s' % (task_id, lib.current_memory()), *cpu1)
         t1T_priv[vloc0:vloc1] -= lib.einsum('jbki,abjk->ai', ovoo, theta[:,p0:p1])
+        cpu1 = log.timer('ggg1     %d %s' % (task_id, lib.current_memory()), *cpu1)
     theta = ovoo = None
 
     woooo = mpi.allreduce(woooo)
@@ -278,6 +300,7 @@ def update_amps(mycc, t1, t2, eris):
     ft_ab = fvv - numpy.einsum('ai,ib->ab', .5*t1T, fov)
     t2Tnew += lib.einsum('acij,bc->abij', t2T, ft_ab)
     t2Tnew -= lib.einsum('ki,abkj->abij', ft_ij, t2T)
+    cpu1 = log.timer('hhh        %s' % str(lib.current_memory()), *cpu1)
 
     mo_e = fock.diagonal()
     eia = mo_e[:nocc,None] - mo_e[None,nocc:]
@@ -287,13 +310,17 @@ def update_amps(mycc, t1, t2, eris):
 
     t2tmp = mpi.alltoall([t2Tnew[:,p0:p1] for p0,p1 in vlocs],
                          split_recvbuf=True)
+    cpu1 = log.timer('iii        %s' % str(lib.current_memory()), *cpu1)
     for task_id, (p0, p1) in enumerate(vlocs):
-        tmp = t2tmp[task_id].reshape(nvir_seg,p1-p0,nocc,nocc)
+        cpu1 = log.timer('iii0     %d  %s' % (task_id, lib.current_memory()), *cpu1)
+        tmp = t2tmp[task_id].reshape(p1-p0,nvir_seg,nocc,nocc)
         t2Tnew[:,p0:p1] += tmp.transpose(1,0,3,2)
+        cpu1 = log.timer('iii1     %d  %s' % (task_id, lib.current_memory()), *cpu1)
 
     for i in range(vloc0, vloc1):
         t2Tnew[i-vloc0] /= lib.direct_sum('i+jb->bij', eia[:,i], eia)
 
+    cpu1 = log.timer('jjj          %s' % str(lib.current_memory()), *cpu1)
     time0 = log.timer_debug1('update t1 t2', *time0)
     return t1Tnew.T, t2Tnew.transpose(2,3,0,1)
 
@@ -463,14 +490,37 @@ def _task_location(n, task=rank):
     loc1 = min(n, loc0 + seg_size)
     return loc0, loc1
 
-def _rotate_tensor_block(buf):
-    ntasks = mpi.pool.size
-    tasks = list(range(ntasks))
-    tasks = tasks[rank:] + tasks[:rank]
-    for task in tasks:
-        if task != rank:
-            buf = mpi.rotate(buf)
-        yield task, buf
+ASYNC = True
+if ASYNC:
+    def _rotate_tensor_block(buf):
+        ntasks = mpi.pool.size
+        tasks = list(range(ntasks))
+        tasks = tasks[rank:] + tasks[:rank]
+
+        buf_prefetch = [None]
+        def rotate():
+            buf_prefetch[0] = mpi.rotate(buf, blocking=False)
+# DO NOT ThreadWithReturnValue, the return value of mpi.rotate is too large
+# for Queue module.
+        handler = lib.ThreadWithTraceBack(target=rotate, args=())
+        handler.start()
+        for k, task in enumerate(tasks):
+            if task != rank:
+                handler.join()
+                buf = buf_prefetch[0]
+                if k + 1 < ntasks:
+                    handler = lib.ThreadWithTraceBack(target=rotate, args=())
+                    handler.start()
+            yield task, buf
+else:
+    def _rotate_tensor_block1(buf):
+        ntasks = mpi.pool.size
+        tasks = list(range(ntasks))
+        tasks = tasks[rank:] + tasks[:rank]
+        for task in tasks:
+            if task != rank:
+                buf = mpi.rotate(buf)
+            yield task, buf
 
 
 def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN,
@@ -821,6 +871,7 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     eris.ovvo = eris.feri1.create_dataset('ovvo', (nocc,v1-v0,nvir,nocc), 'f8', chunks=(nocc,1,nvir,nocc))
     eris.ovov = eris.feri1.create_dataset('ovov', (nocc,v1-v0,nocc,nvir), 'f8', chunks=(nocc,1,nocc,nvir))
     eris.ovvv = eris.feri1.create_dataset('ovvv', (nocc,v1-v0,nvpair), 'f8', chunks=(nocc,1,nvpair))
+    #eris.vvvo = eris.feri1.create_dataset('vvvo', (v1-v0,nvir,nvir,nocc), 'f8', chunks=(v1-v0,nvir,1,nocc))
     assert(mycc.direct)
 
     oovv = numpy.empty((nocc,nocc,nvir,nvir))
@@ -851,20 +902,21 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     blksize = int(min(8e9,max_memory*.5e6)/8/(nao_pair+nmo**2)/nocc)
     blksize = min(nmo, max(BLKMIN, blksize))
     fload = ao2mo.outcore._load_from_h5g
-    def prefetch(p0, p1, rowmax, buf):
-        p0, p1 = p1, min(rowmax, p1+blksize)
-        if p0 < p1:
-            fload(fswap['0'], p0*nocc, p1*nocc, buf)
 
     buf = numpy.empty((blksize*nocc,nao_pair))
     buf_prefetch = numpy.empty_like(buf)
+    def prefetch(p0, p1, rowmax):
+        p0, p1 = p1, min(rowmax, p1+blksize)
+        if p0 < p1:
+            fload(fswap['0'], p0*nocc, p1*nocc, buf_prefetch)
+
     outbuf = numpy.empty((blksize*nocc,nmo**2))
     with lib.call_in_background(prefetch) as bprefetch:
         fload(fswap['0'], 0, min(nocc,blksize)*nocc, buf_prefetch)
         for p0, p1 in lib.prange(0, nocc, blksize):
             nrow = (p1 - p0) * nocc
             buf, buf_prefetch = buf_prefetch, buf
-            bprefetch(p0, p1, nocc, buf_prefetch)
+            bprefetch(p0, p1, nocc)
             dat = ao2mo._ao2mo.nr_e2(buf[:nrow], mo_coeff, (0,nmo,0,nmo),
                                      's4', 's1', out=outbuf, ao_loc=ao_loc)
             save_occ_frac(p0, p1, dat)
@@ -874,7 +926,7 @@ def _make_eris_outcore(mycc, mo_coeff=None):
         for p0, p1 in lib.prange(0, v1-v0, blksize):
             nrow = (p1 - p0) * nocc
             buf, buf_prefetch = buf_prefetch, buf
-            bprefetch(nocc+p0, nocc+p1, norb_max, buf_prefetch)
+            bprefetch(nocc+p0, nocc+p1, norb_max)
             dat = ao2mo._ao2mo.nr_e2(buf[:nrow], mo_coeff, (0,nmo,0,nmo),
                                      's4', 's1', out=outbuf, ao_loc=ao_loc)
             save_vir_frac(p0, p1, dat)
