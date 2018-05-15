@@ -28,12 +28,14 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
     cput1 = cput0 = (time.clock(), time.time())
     _sync_(mycc)
 
+    eris = getattr(mycc, '_eris', None)
     if eris is None:
-        eris = mycc.ao2mo(mycc.mo_coeff)
+        mycc.ao2mo(mycc.mo_coeff)
+        eris = mycc._eris
     if t1 is None and t2 is None:
-        t1, t2 = mycc.get_init_guess(eris)
+        t1, t2 = mycc.get_init_guess()
     elif t2 is None:
-        t2 = mycc.get_init_guess(eris)[1]
+        t2 = mycc.get_init_guess()[1]
 
     eold = 0
     vec_old = 0
@@ -600,8 +602,10 @@ def vector_to_amplitudes(vector, nmo, nocc):
 
 @mpi.parallel_call
 def init_amps(mycc, eris=None):
-    if eris is None: eris = mycc._eris
-    if eris is None: mycc.ao2mo()
+    eris = getattr(mycc, '_eris', None)
+    if eris is None:
+        mycc.ao2mo()
+        eris = mycc._eris
 
     time0 = time.clock(), time.time()
     mo_e = eris.fock.diagonal()
@@ -632,8 +636,10 @@ def energy(mycc, t1=None, t2=None, eris=None):
     '''CCSD correlation energy'''
     if t1 is None: t1 = mycc.t1
     if t2 is None: t2 = mycc.t2
-    if eris is None: eris = mycc._eris
-    if eris is None: eris = mycc.ao2mo()
+    eris = getattr(mycc, '_eris', None)
+    if eris is None:
+        mycc.ao2mo()
+        eris = mycc._eris
 
     nocc, nvir = t1.shape
     t2T = t2.transpose(2,3,0,1)
@@ -764,7 +770,8 @@ class CCSD(ccsd.CCSD):
         return self.e_corr, self.t1, self.t2
 
     def ao2mo(self, mo_coeff=None):
-        return _make_eris_outcore(self, mo_coeff)
+        _make_eris_outcore(self, mo_coeff)
+        return 'Done'
 
     def run_diis(self, t1, t2, istep, normt, de, adiis):
         if (adiis and
