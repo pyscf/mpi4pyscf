@@ -66,16 +66,16 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
 def update_amps(mycc, t1, t2, eris):
     time0 = time.clock(), time.time()
     log = logger.Logger(mycc.stdout, mycc.verbose)
-    nocc, nvir = t1.shape
-    nov = nocc*nvir
     fock = eris.fock
 
     t1T = t1.T
     t2T = numpy.asarray(t2.transpose(2,3,0,1), order='C')
+    nvir_seg, nvir, nocc = t2T.shape[:3]
     t1 = t2 = None
     ntasks = mpi.pool.size
     vlocs = [_task_location(nvir, task_id) for task_id in range(ntasks)]
     vloc0, vloc1 = vlocs[rank]
+    assert(vloc1-vloc0 == nvir_seg)
 
     def _rotate_vir_block(buf):
         for task_id, buf in _rotate_tensor_block(buf):
@@ -83,7 +83,7 @@ def update_amps(mycc, t1, t2, eris):
             yield task_id, buf, loc0, loc1
 
     fswap = lib.H5TmpFile()
-    wVooV = numpy.zeros((vloc1-vloc0,nocc,nocc,nvir))
+    wVooV = numpy.zeros((nvir_seg,nocc,nocc,nvir))
     eris_voov = numpy.asarray(eris.ovvo).transpose(1,0,3,2)
     tau  = t2T * .5
     tau += numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
@@ -92,19 +92,17 @@ def update_amps(mycc, t1, t2, eris):
     fswap['wVooV1'] = wVooV
     wVooV = tau = None
 
+    wVOov = eris_voov
     eris_VOov = eris_voov - eris_voov.transpose(0,2,1,3)*.5
-    eris_voov = None
-    tau  = t2T.transpose(2,0,3,1) * 2 - t2T.transpose(3,0,2,1)
-    tau -= numpy.einsum('ai,bj->jaib', t1T[vloc0:vloc1]*2, t1T)
-    wVOov = eris_VOov.copy()
+    tau  = t2T.transpose(2,0,3,1) - t2T.transpose(3,0,2,1)*.5
+    tau -= numpy.einsum('ai,bj->jaib', t1T[vloc0:vloc1], t1T)
     for task_id, tau, p0, p1 in _rotate_vir_block(tau):
         wVOov += lib.einsum('dlkc,kcjb->dljb', eris_VOov[:,:,:,p0:p1], tau)
     fswap['wVOov1'] = wVOov
-    wVOov = tau = eris_VOov = None
+    wVOov = tau = eris_VOov = eris_voov = None
 
     t1Tnew = numpy.zeros_like(t1T)
     t2Tnew = mycc._add_vvvv(t1T, t2T, eris, t2sym='jiba')
-    t2Tnew *= .5  # *.5 because t2+t2.transpose(1,0,3,2) in the end
     time1 = log.timer_debug1('vvvv', *time0)
 
 #** make_inter_F
@@ -134,16 +132,16 @@ def update_amps(mycc, t1, t2, eris):
         if p0 < p1:
             buf[:p1-p0] = eris.ovvv[:,p0:p1].transpose(1,0,2)
 
-    fwVOov = fswap.create_dataset('wVOov', (vloc1-vloc0,nocc,nocc,nvir), 'f8')
-    fwVooV = fswap.create_dataset('wVooV', (vloc1-vloc0,nocc,nocc,nvir), 'f8')
+    fwVOov = fswap.create_dataset('wVOov', (nvir_seg,nocc,nocc,nvir), 'f8')
+    wVooV = numpy.zeros((nvir_seg,nocc,nocc,nvir))
 
     buf = numpy.empty((blksize,nocc,nvir_pair))
     with lib.call_in_background(load_ovvv) as prefetch:
-        load_ovvv(0, min(vloc1-vloc0, blksize), buf)
+        load_ovvv(0, min(nvir_seg, blksize), buf)
         for p0, p1 in lib.prange(vloc0, vloc1, blksize):
             i0, i1 = p0 - vloc0, p1 - vloc0
             eris_vovv, buf = buf[:p1-p0], numpy.empty_like(buf)
-            prefetch(i1, min(vloc1-vloc0, i1+blksize), buf)
+            prefetch(i1, min(nvir_seg, i1+blksize), buf)
 
             eris_vovv = lib.unpack_tril(eris_vovv.reshape((p1-p0)*nocc,nvir_pair))
             eris_vovv = eris_vovv.reshape(p1-p0,nocc,nvir,nvir)
@@ -152,21 +150,19 @@ def update_amps(mycc, t1, t2, eris):
             fvv_priv[:,p0:p1] -= numpy.einsum('ck,bkca->ab', t1T, eris_vovv)
 
             # Partition on index 0?
-            vovv = eris_vovv.transpose(3,1,0,2)
+            vovv = eris_vovv.transpose(2,1,0,3)
             vovv = mpi.alltoall([vovv[q0:q1] for q0, q1 in vlocs], split_recvbuf=True)
-            vovv = [x.reshape(vloc1-vloc0,nocc,-1,nvir) for x in vovv]
+            vovv = [x.reshape(nvir_seg,nocc,-1,nvir) for x in vovv]
             if not mycc.direct:
                 tau = t2T[i0:i1] + numpy.einsum('ai,bj->abij', t1T[p0:p1], t1T)
                 for task_id, tau in _rotate_tensor_block(tau):
                     tmp = lib.einsum('bkcd,cdij->bkij', vovv[task_id], tau)
-                    t2new -= lib.einsum('ka,bkij->baji', t1, tmp)
+                    t2Tnew -= lib.einsum('ak,bkij->baji', t1T, tmp)
                 tau = tmp = None
 
-            wVooV = numpy.zeros((p1-p0,nocc,nocc,nvir))
             for task_id, (q0, q1) in enumerate(comm.allgather((p0,p1))):
-                wVooV -= lib.einsum('cj,ciba->bjia', t1T[q0:q1], vovv[task_id])
-            fwVooV[i0:i1] = wVooV
-            vovv = wVooV = None
+                wVooV -= lib.einsum('cj,bica->bija', t1T[q0:q1], vovv[task_id])
+            vovv = None
 
             theta  = t2T[i0:i1].transpose(0,2,1,3) * 2
             theta -= t2T[i0:i1].transpose(0,3,1,2)
@@ -175,6 +171,8 @@ def update_amps(mycc, t1, t2, eris):
             fwVOov[i0:i1] = lib.einsum('biac,cj->bija', eris_vovv, t1T)
             eris_voov = eris_VOov = None
             time1 = log.timer_debug1('vovv [%d:%d]'%(p0, p1), *time1)
+    fswap['wVooV'] = wVooV
+    wVooV = None
 
     time1 = log.timer_debug1('ovvv', *time1)
 
@@ -188,8 +186,8 @@ def update_amps(mycc, t1, t2, eris):
 
     for p0, p1 in lib.prange(vloc0, vloc1, blksize):
         i0, i1 = p0 - vloc0, p1 - vloc0
-        wVOov = fwVOov[i0:i1]
-        wVooV = fwVooV[i0:i1]
+        wVOov = fswap['wVOov'][i0:i1]
+        wVooV = fswap['wVooV'][i0:i1]
         eris_ovoo = eris.ovoo[:,i0:i1]
         foo_priv += numpy.einsum('ck,kcji->ij', 2*t1T[p0:p1], eris_ovoo)
         foo_priv += numpy.einsum('ck,icjk->ij',  -t1T[p0:p1], eris_ovoo)
@@ -235,7 +233,7 @@ def update_amps(mycc, t1, t2, eris):
 
         wVooV += fswap['wVooV1'][i0:i1]
         fswap['wVooV1'][i0:i1] = wVooV
-        wVOov += fswap['wVOov1'][i0:i1] * .5
+        wVOov += fswap['wVOov1'][i0:i1]
         fswap['wVOov1'][i0:i1] = wVOov
         eris_VOov = wVOov = wVooV = None
         time1 = log.timer_debug1('voov [%d:%d]'%(p0, p1), *time1)
@@ -253,24 +251,25 @@ def update_amps(mycc, t1, t2, eris):
     for task_id, wVOov, p0, p1 in _rotate_vir_block(wVOov):
         t2Tnew += lib.einsum('acik,ckjb->abij', theta[:,p0:p1], wVOov)
     wVOov = theta = None
-    fwVOov = fwVooV = fswap = None
+    fwVOov = fswap = None
+
+    foo += mpi.allreduce(foo_priv)
+    fov += mpi.allreduce(fov_priv)
+    fvv += mpi.allreduce(fvv_priv)
 
     theta = t2T.transpose(0,1,3,2) * 2 - t2T
     t1T_priv[vloc0:vloc1] += numpy.einsum('jb,abji->ai', fov, theta)
     ovoo = numpy.asarray(eris.ovoo)
     for task_id, ovoo, p0, p1 in _rotate_vir_block(ovoo):
-        t1T_priv[p0:p1] -= lib.einsum('jbki,abjk->ai', ovoo, theta[:,p0:p1])
+        t1T_priv[vloc0:vloc1] -= lib.einsum('jbki,abjk->ai', ovoo, theta[:,p0:p1])
     theta = ovoo = None
 
     woooo = mpi.allreduce(woooo)
     woooo += numpy.asarray(eris.oooo).transpose(0,2,1,3)
     tau = t2T + numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
-    t2Tnew += .5 * lib.einsum('abkl,klij->abij', tau, woooo)
+    t2Tnew += .5 * lib.einsum('abkl,ijkl->abij', tau, woooo)
     tau = woooo = None
 
-    foo += mpi.allreduce(foo_priv)
-    fov += mpi.allreduce(fov_priv)
-    fvv += mpi.allreduce(fvv_priv)
     t1Tnew += mpi.allreduce(t1T_priv)
 
     ft_ij = foo + numpy.einsum('aj,ia->ij', .5*t1T, fov)
@@ -287,8 +286,8 @@ def update_amps(mycc, t1, t2, eris):
     t2tmp = mpi.alltoall([t2Tnew[:,p0:p1] for p0,p1 in vlocs],
                          split_recvbuf=True)
     for task_id, (p0, p1) in enumerate(vlocs):
-        tmp = t2tmp[task_id].reshape(vloc1-vloc0,p1-p0,nocc,nocc)
-        t2Tnew[:,p0:p1] = tmp.transpose(1,0,3,2)
+        tmp = t2tmp[task_id].reshape(nvir_seg,p1-p0,nocc,nocc)
+        t2Tnew[:,p0:p1] += tmp.transpose(1,0,3,2)
 
     for i in range(vloc0, vloc1):
         t2Tnew[i-vloc0] /= lib.direct_sum('i+jb->bij', eia[:,i], eia)
@@ -303,10 +302,14 @@ def _add_vvvv(mycc, t1T, t2T, eris, out=None, with_ovvv=None, t2sym=None):
     if t2sym == 'jiba':
         nvir_seg, nvir, nocc = t2T.shape[:3]
         Ht2tril = _add_vvvv_tril(mycc, t1T, t2T, eris, with_ovvv=with_ovvv)
-        Ht2 = lib.unpack_tril(Ht2tril.reshape(nvir_seg*nvir,nocc*(nocc+1)//2))
-        Ht2 = Ht2.reshape(t2T.shape)
+        Ht2 = numpy.zeros_like(t2T)
+        Ht2 = lib.unpack_tril(Ht2tril.reshape(nvir_seg*nvir,nocc*(nocc+1)//2),
+                              filltriu=lib.PLAIN, out=Ht2).reshape(t2T.shape)
+        oidx = numpy.arange(nocc)
+        Ht2[:,:,oidx,oidx] *= .5
     else:
         Ht2 = _add_vvvv_full(mycc, t1T, t2T, eris, out, with_ovvv)
+        Ht2 *= .5
     return Ht2
 
 def _add_vvvv_tril(mycc, t1T, t2T, eris, out=None, with_ovvv=None):
@@ -497,7 +500,7 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN
         jc = j1 - j0
         #:Ht2[j0:j1] += numpy.einsum('efx,efab->abx', t2T[i0:i1], eri)
         _dgemm('T', 'N', jc*nvirb, nocc2, ic*nvirb,
-               eri.reshape(-1,jc*nvirb), t2T.reshape(nvir2,nocc2),
+               eri.reshape(ic*nvirb,jc*nvirb), t2T.reshape(-1,nocc2),
                Ht2.reshape(nvir2,nocc2), 1, 1, 0, i0*nvirb*nocc2, j0*nvirb*nocc2)
 
     if vvvv is None:   # AO-direct CCSD
@@ -516,7 +519,7 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN
         for task in range(ntasks):
             sh0 = task_sh_locs[task]
             sh1 = task_sh_locs[task+1]
-            sh_ranges = ao2mo.outcore.balance_partition(ao_loc, blksize, sh0, sh1-1)
+            sh_ranges = ao2mo.outcore.balance_partition(ao_loc, blksize, sh0, sh1)
             sh_ranges_tasks.append(sh_ranges)
 
         blksize = max(max(x[2] for x in sh_ranges)
@@ -541,7 +544,7 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN
                                shls_slice=(ish0,ish1,jsh0,jsh1), aosym='s2kl',
                                ao_loc=ao_loc, cintopt=ao2mopt._cintopt, out=eribuf)
                     i0, i1 = ao_loc[ish0] - cur_offset, ao_loc[ish1] - cur_offset
-                    j0, j1 = ao_loc[jsh0] - ao_offset, ao_loc[jsh1] - ao_offset
+                    j0, j1 = ao_loc[jsh0] - ao_offset , ao_loc[jsh1] - ao_offset
                     tmp = numpy.ndarray((i1-i0,nvirb,j1-j0,nvirb), buffer=loadbuf)
                     fload(tmp.ctypes.data_as(ctypes.c_void_p),
                           eri.ctypes.data_as(ctypes.c_void_p),
@@ -552,31 +555,51 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN
                                              (ish0,ish1,jsh0,jsh1), *time0)
     else:
         raise NotImplementedError
-    return Ht2.reshape(t2T.shape)
+    return Ht2
 
 def amplitudes_to_vector(t1, t2, out=None):
-    t1T = t1.T
     t2T = t2.transpose(2,3,0,1)
-    nvir_seg, nvir, nocc = t2.shape[:3]
-    nov = nocc * nvir
-    nocc2 = nocc*(nocc+1)//2
-    size = nov + nvir_seg*nvir*nocc2
-    vector = numpy.ndarray(size, t1.dtype, buffer=out)
-    vector[:nov] = t1T.ravel()
-    lib.pack_tril(t2T.reshape(nvir_seg*nivr,nocc2), out=vector[nov:])
+    nvir_seg, nvir, nocc = t2T.shape[:3]
+    if rank == 0:
+        t1T = t1.T
+        nov = nocc * nvir
+        nocc2 = nocc*(nocc+1)//2
+        size = nov + nvir_seg*nvir*nocc2
+        vector = numpy.ndarray(size, t1.dtype, buffer=out)
+        vector[:nov] = t1T.ravel()
+        lib.pack_tril(t2T.reshape(nvir_seg*nvir,nocc,nocc), out=vector[nov:])
+    else:
+        vector = lib.pack_tril(t2T.reshape(nvir_seg*nvir,nocc,nocc))
     return vector
 
 def vector_to_amplitudes(vector, nmo, nocc):
     nvir = nmo - nocc
     nov = nocc * nvir
     nocc2 = nocc*(nocc+1)//2
-    t1 = vector[:nov].copy().reshape((nvir,nocc)).T
-    t2T = lib.unpack_tril(vector[nov:].reshape(-1,nocc2), filltriu=lib.SYMMETRIC)
-    t2 = t2T.reshape(-1,nvir,nocc,nocc).transpose(2,3,0,1)
-    return t1, t2
+    vlocs = [_task_location(nvir, task_id) for task_id in range(mpi.pool.size)]
+    vloc0, vloc1 = vlocs[rank]
+    nvir_seg = vloc1 - vloc0
+
+    if rank == 0:
+        t1T = vector[:nov].copy().reshape((nvir,nocc))
+        mpi.bcast(t1T)
+        t2tril = vector[nov:].reshape(nvir_seg,nvir,nocc2)
+    else:
+        t1T = mpi.bcast(None)
+        t2tril = vector.reshape(nvir_seg,nvir,nocc2)
+
+    t2T = lib.unpack_tril(t2tril.reshape(nvir_seg*nvir,nocc2), filltriu=lib.PLAIN)
+    t2T = t2T.reshape(nvir_seg,nvir,nocc,nocc)
+    t2tmp = mpi.alltoall([t2tril[:,p0:p1] for p0,p1 in vlocs], split_recvbuf=True)
+    idx,idy = numpy.tril_indices(nocc)
+    for task_id, (p0, p1) in enumerate(vlocs):
+        tmp = t2tmp[task_id].reshape(nvir_seg,p1-p0,nocc2)
+        t2T[:,p0:p1,idy,idx] = tmp.transpose(1,0,2)
+    return t1T.T, t2T.transpose(2,3,0,1)
 
 
-def _init_amps(mycc, eris=None):
+@mpi.parallel_call
+def init_amps(mycc, eris=None):
     if eris is None: eris = mycc._eris
     if eris is None: mycc.ao2mo()
 
@@ -599,13 +622,13 @@ def _init_amps(mycc, eris=None):
         emp2 += 2 * numpy.einsum('abij,iajb', t2T[p0:p1], eris_ovov)
         emp2 -=     numpy.einsum('abji,iajb', t2T[p0:p1], eris_ovov)
 
-    mycc.emp2 = comm.reduce(emp2)
+    mycc.emp2 = comm.allreduce(emp2)
     logger.info(mycc, 'Init t2, MP2 energy = %.15g', mycc.emp2)
     logger.timer(mycc, 'init mp2', *time0)
     return mycc.emp2, t1T.T, t2T.transpose(2,3,0,1)
-init_amps = mpi.parallel_call(_init_amps)
 
-def _energy(mycc, t1=None, t2=None, eris=None):
+@mpi.parallel_call
+def energy(mycc, t1=None, t2=None, eris=None):
     '''CCSD correlation energy'''
     if t1 is None: t1 = mycc.t1
     if t2 is None: t2 = mycc.t2
@@ -619,20 +642,22 @@ def _energy(mycc, t1=None, t2=None, eris=None):
     e = numpy.einsum('ia,ia', fock[:nocc,nocc:], t1) * 2
     max_memory = mycc.max_memory - lib.current_memory()[0]
     blksize = int(min(nvir, max(BLKMIN, max_memory*.3e6/8/(nocc**2*nvir+1))))
-    for p0, p1 in lib.prange(0, loc0-loc1, blksize):
+    for p0, p1 in lib.prange(0, loc1-loc0, blksize):
         eris_ovov = eris.ovov[:,p0:p1]
         tau = t2T[p0:p1] + numpy.einsum('ia,jb->abij', t1[:,p0+loc0:p1+loc0], t1)
         e += 2 * numpy.einsum('abij,iajb', tau, eris_ovov)
         e -=     numpy.einsum('abji,iajb', tau, eris_ovov)
-    e = comm.reduce(e)
+    e = comm.allreduce(e)
 
     if rank == 0 and abs(e.imag) > 1e-4:
         logger.warn(mycc, 'Non-zero imaginary part found in CCSD energy %s', e)
     return e
-energy = mpi.parallel_call(_energy)
 
 @mpi.parallel_call
 def distribute_t2_(mycc, t2=None):
+    '''Distribute the entire t2 amplitudes tensor (nocc,nocc,nvir,nvir) to
+    different processes
+    '''
     if rank == 0:
         if t2 is None: t2 = mycc.t2
         nocc = t2.shape[0]
@@ -740,6 +765,15 @@ class CCSD(ccsd.CCSD):
 
     def ao2mo(self, mo_coeff=None):
         return _make_eris_outcore(self, mo_coeff)
+
+    def run_diis(self, t1, t2, istep, normt, de, adiis):
+        if (adiis and
+            istep >= self.diis_start_cycle and
+            abs(de) < self.diis_start_energy_diff):
+            vec = self.amplitudes_to_vector(t1, t2)
+            t1, t2 = self.vector_to_amplitudes(adiis.update(vec))
+            logger.debug1(self, 'DIIS for step %d', istep)
+        return t1, t2
 
     def amplitudes_to_vector(self, t1, t2, out=None):
         return amplitudes_to_vector(t1, t2, out)
@@ -869,23 +903,17 @@ if __name__ == '__main__':
     mf.mo_occ[:mol.nelectron//2] = 2
 
     mycc = cc.CCSD(mf)
+    mycc.direct = True
     eris = mycc.ao2mo(mf.mo_coeff)
-    if rank == 0:
-        print(abs(numpy.asarray(eris1.oooo) - numpy.asarray(eris.oooo)).max())
-        print(abs(numpy.asarray(oovv) - numpy.asarray(eris.oovv)).max())
-        print(abs(numpy.asarray(ovvo) - numpy.asarray(eris.ovvo)).max())
-        print(abs(numpy.asarray(ovov) - numpy.asarray(eris.ovov)).max())
 
     emp2, v1, v2 = mycc.init_amps(eris)
-    if rank == 0:
-        print(lib.finger(v1) - 0.20852878109950079)
-        print(lib.finger(v2) - 0.21333574169417541)
-        print(emp2 - -0.12037888088751542)
+    print(lib.finger(v1) - 0.20852878109950079)
+    print(lib.finger(v2) - 0.21333574169417541)
+    print(emp2 - -0.12037888088751542)
 
     t1 = numpy.random.random((nocc,nvir))
     t2 = numpy.random.random((nocc,nocc,nvir,nvir))
     t2 = t2 + t2.transpose(1,0,3,2)
     v1, v2 = mycc.update_amps(t1, t2, eris)
-    if rank == 0:
-        print(lib.finger(v1) - 9.6029949445427079)
-        print(lib.finger(v2) - 4.5308876217231813)
+    print(lib.finger(v1) - 9.6029949445427079)
+    print(lib.finger(v2) - 4.5308876217231813)

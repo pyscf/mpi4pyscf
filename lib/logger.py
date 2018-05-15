@@ -10,6 +10,22 @@ from pyscf.lib import logger
 from mpi4pyscf.tools import mpi
 rank = mpi.rank
 
+DEBUG4 = logger.DEBUG4
+DEBUG3 = logger.DEBUG3
+DEBUG2 = logger.DEBUG2
+DEBUG1 = logger.DEBUG1
+DEBUG  = logger.DEBUG
+INFO   = logger.INFO
+NOTE   = logger.NOTICE
+WARNING = WARN = logger.WARN
+ERROR  = ERR = logger.ERR
+QUIET  = logger.QUIET
+CRIT   = logger.CRIT
+ALERT  = logger.ALERT
+PANIC  = logger.PANIC
+
+TIMER_LEVEL  = logger.TIMER_LEVEL
+
 log = logger.log
 error = logger.error
 warn = logger.warn

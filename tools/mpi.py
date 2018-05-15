@@ -339,7 +339,13 @@ def sendrecv(sendbuf, source=0, dest=0):
         return recvbuf
 
 def rotate(sendbuf):
-    '''On every process, pass the sendbuf to the next process.'''
+    '''On every process, pass the sendbuf to the next process.
+    Node-ID  Before-rotate  After-rotate
+    node-0   buf-0          buf-1
+    node-1   buf-1          buf-2
+    node-2   buf-2          buf-3
+    node-3   buf-3          buf-0
+    '''
     if pool.size <= 1:
         return sendbuf
 
@@ -355,11 +361,11 @@ def rotate(sendbuf):
 
     if isinstance(sendbuf, numpy.ndarray):
         if rank % 2 == 0:
-            sendrecv(sendbuf, rank, next_node)
-            recvbuf = sendrecv(None, prev_node, rank)
+            sendrecv(sendbuf, rank, prev_node)
+            recvbuf = sendrecv(None, next_node, rank)
         else:
-            recvbuf = sendrecv(None, prev_node, rank)
-            sendrecv(sendbuf, rank, next_node)
+            recvbuf = sendrecv(None, next_node, rank)
+            sendrecv(sendbuf, rank, prev_node)
     else:
         if rank % 2 == 0:
             comm.send(sendbuf, dest=next_node)
