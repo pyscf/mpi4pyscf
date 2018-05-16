@@ -306,7 +306,15 @@ def alltoall(sendbuf, split_recvbuf=False):
     #               [recvbuf.ravel(), rcounts, rdispls, mpi_dtype])
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
-    for p0, p1 in lib.prange(0, numpy.max(scounts), INT_MAX-7):
+
+    blksize = INT_MAX - 7
+    max_counts = numpy.max(scounts)
+    nsteps = max(comm.allgather((max_counts+blksize-1)//blksize))
+    #DONOT lib.prange. lib.prange may terminate early in some processes
+    #:for p0, p1 in lib.prange(0, numpy.max(scounts), INT_MAX-7):
+    for istep in range(nsteps):
+        p0 = min(max_counts, istep * blksize)
+        p1 = min(max_counts, (istep+1) * blksize)
         scounts_seg = scounts - p0
         rcounts_seg = rcounts - p0
         scounts_seg[scounts_seg<0] = 0
