@@ -29,7 +29,8 @@ mycc = cc.CCSD(mf)
 mycc.direct = True
 eris = mycc.ao2mo(mf.mo_coeff)
 mycc1 = mpicc.ccsd.CCSD(mf)
-eris1 = mycc1.ao2mo(mf.mo_coeff)
+mycc1.ao2mo(mf.mo_coeff)
+eris1 = mycc1._eris
 nv = eris1.oovv.shape[2]
 print(abs(numpy.asarray(eris1.oooo) - numpy.asarray(eris.oooo)).max())
 print(abs(numpy.asarray(eris1.oovv) - numpy.asarray(eris.oovv[:,:,:nv])).max())
@@ -80,4 +81,4 @@ mycc = cc.CCSD(mf)
 mycc.kernel()
 mycc1 = mpicc.ccsd.CCSD(mf)
 mycc1.kernel()
-print(mycc.e_tot, mycc1.e_tot)
+print(mycc.e_tot - mycc1.e_tot)
