@@ -10,9 +10,22 @@ from mpi4pyscf.tools import mpi
 
 class DistributedDIIS(lib.diis.DIIS):
 
+    def _store(self, key, value):
+        if self._diisfile is None:
+            if isinstance(self.filename, str):
+                filename = self.filename + '__rank' + str(mpi.rank)
+                self._diisfile = lib.H5TmpFile(filename, 'w')
+
+            elif not (self.incore or value.size < lib.diis.INCORE_SIZE):
+                self._diisfile = lib.H5TmpFile(self.filename, 'w')
+
+        return lib.diis.DIIS._store(self, key, value)
+
     def extrapolate(self, nd=None):
         if nd is None:
             nd = self.get_num_vec()
+        if nd == 0:
+            raise RuntimeError('No vector found in DIIS object.')
 
         h = self._H[:nd+1,:nd+1].copy()
         h[1:,1:] = mpi.comm.allreduce(self._H[1:nd+1,1:nd+1])
@@ -40,4 +53,20 @@ class DistributedDIIS(lib.diis.DIIS):
             for p0, p1 in lib.prange(0, xi.size, lib.diis.BLOCK_SIZE):
                 xnew[p0:p1] += xi[p0:p1] * ci
         return xnew
+
+    def restore(self, filename, inplace=True):
+        '''Read diis contents from a diis file and replace the attributes of
+        current diis object if needed, then construct the vector.
+        '''
+        filename_base = filename.split('__rank')[0]
+        filename = filename_base + '__rank' + str(mpi.rank)
+        val = lib.diis.DIIS.restore(self, filename, inplace)
+        if inplace:
+            self.filename = filename_base
+        return val
+
+
+def restore(filename):
+    '''Restore/construct diis object based on a diis file'''
+    return DIIS().restore(filename)
 

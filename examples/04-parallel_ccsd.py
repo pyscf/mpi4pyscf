@@ -18,7 +18,14 @@ mol.atom = [
 mol.basis = '6-31g'
 mol.verbose = 4
 mol.build()
-mf = scf.RHF(mol).run()
+mf = scf.RHF(mol)
+mf.chkfile = 'h2o.chk'
+mf.run()
 
 mycc = cc.RCCSD(mf)
+mycc.diis_file = 'mpi_ccdiis.h5'
 mycc.kernel()
+
+mycc.restore_from_diis_('mpi_ccdiis.h5')
+mycc.kernel()
+

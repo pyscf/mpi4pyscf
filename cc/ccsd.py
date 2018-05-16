@@ -32,16 +32,23 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
     if eris is None:
         mycc.ao2mo(mycc.mo_coeff)
         eris = mycc._eris
+
+    # Use the existed amplitudes as initial guess
+    if t1 is None: t1 = mycc.t1
+    if t2 is None: t2 = mycc.t2
     if t1 is None and t2 is None:
         t1, t2 = mycc.get_init_guess(eris)
     elif t2 is None:
         t2 = mycc.get_init_guess(eris)[1]
 
     eold = 0
-    vec_old = 0
-    eccsd = 0
-    if mycc.diis:
-        adiis = diis.DistributedDIIS(mycc)
+    eccsd = mycc.energy(t1, t2, eris)
+    log.info('Init E(CCSD) = %.15g', eccsd)
+
+    if isinstance(mycc.diis, diis.DistributedDIIS):
+        adiis = mycc.diis
+    elif mycc.diis:
+        adiis = diis.DistributedDIIS(mycc, mycc.diis_file)
         adiis.space = mycc.diis_space
     else:
         adiis = None
@@ -390,7 +397,7 @@ def _add_vvvv_tril(mycc, t1T, t2T, eris, out=None, with_ovvv=None):
                 ao_loc0 = ao_loc[task_sh_locs[task_id  ]]
                 ao_loc1 = ao_loc[task_sh_locs[task_id+1]]
                 Ht2tril -= lib.einsum('pa,pbx->abx', t1_ao[ao_loc0:ao_loc1], buf)
-        time1 = log.timer_debug1('vvvv-tau ao2mo', *time0)
+        time1 = log.timer_debug1('contracting vvvv-tau', *time0)
     else:
         raise NotImplementedError
     return Ht2tril
@@ -706,6 +713,17 @@ def _diff_norm(mycc, t1new, t2new, t1, t2):
     norm1 = numpy.linalg.norm(t1new - t1)
     return (norm1**2 + norm2**2)**.5
 
+@lib.with_doc(ccsd.restore_from_diis_.__doc__)
+@mpi.parallel_call
+def restore_from_diis_(mycc, diis_file, inplace=True):
+    adiis = diis.DistributedDIIS(mycc, mycc.diis_file)
+    adiis.restore(diis_file, inplace=inplace)
+    ccvec = adiis.extrapolate()
+    mycc.t1, mycc.t2 = mycc.vector_to_amplitudes(ccvec)
+    if inplace:
+        mycc.diis = adiis
+    return mycc
+
 # Temporarily placed here.  Move it to mpi_scf module in the future
 def _pack_scf(mf):
     mfdic = {'verbose'    : mf.verbose,
@@ -724,6 +742,7 @@ def _init_ccsd(ccsd_obj):
         mpi.comm.bcast((ccsd_obj.mol.dumps(), ccsd_obj.pack()))
     else:
         ccsd_obj = ccsd.CCSD.__new__(ccsd.CCSD)
+        ccsd_obj.t1 = ccsd_obj.t2 = None
         mol, cc_attr = mpi.comm.bcast(None)
         ccsd_obj.mol = gto.mole.loads(mol)
         ccsd_obj.unpack_(cc_attr)
@@ -755,6 +774,7 @@ class CCSD(ccsd.CCSD):
                 'mo_occ'    : self.mo_occ,
                 '_nocc'     : self._nocc,
                 '_nmo'      : self._nmo,
+                'diis_file' : self.diis_file,
                 'direct'    : self.direct}
     def unpack_(self, ccdic):
         self.__dict__.update(ccdic)
@@ -774,8 +794,6 @@ class CCSD(ccsd.CCSD):
     _add_vvvv = _add_vvvv
     update_amps = update_amps
 
-    def kernel(self, t1=None, t2=None, eris=None):
-        return self.ccsd(t1, t2, eris)
     def ccsd(self, t1=None, t2=None, eris=None):
         assert(self.mo_coeff is not None)
         assert(self.mo_occ is not None)
@@ -811,6 +829,8 @@ class CCSD(ccsd.CCSD):
         if nocc is None: nocc = self.nocc
         if nmo is None: nmo = self.nmo
         return vector_to_amplitudes(vec, nmo, nocc)
+
+    restore_from_diis_ = restore_from_diis_
 
 CC = RCCSD = CCSD
 
