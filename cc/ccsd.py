@@ -14,11 +14,11 @@ from mpi4pyscf.lib import logger
 from mpi4pyscf.lib import diis
 from mpi4pyscf.tools import mpi
 
-BLKMIN = getattr(__config__, 'cc_ccsd_blkmin', 4)
-MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
-
 comm = mpi.comm
 rank = mpi.rank
+
+BLKMIN = getattr(__config__, 'cc_ccsd_blkmin', 4)
+MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
 
 @mpi.parallel_call
@@ -686,7 +686,7 @@ def energy(mycc, t1=None, t2=None, eris=None):
 
     if rank == 0 and abs(e.imag) > 1e-4:
         logger.warn(mycc, 'Non-zero imaginary part found in CCSD energy %s', e)
-    return e
+    return e.real
 
 @mpi.parallel_call
 def distribute_t2_(mycc, t2=None):
@@ -707,6 +707,14 @@ def distribute_t2_(mycc, t2=None):
         t2T = mpi.comm.scatter(None)
     mycc.t2 = t2T.transpose(2,3,0,1)
     return mycc.t2
+
+@mpi.parallel_call
+def gather_amplitudes(mycc):
+    '''Reconstruct the t1, t2 amplitudes from the distributed t2 tensors
+    '''
+    t1, t2 = mycc.t1, mycc1.t2
+    t2 = mpi.gather(t2.transpose(2,3,0,1)).transpose(2,3,0,1)
+    return t1, t2
 
 def _diff_norm(mycc, t1new, t2new, t1, t2):
     norm2 = comm.allreduce(numpy.linalg.norm(t2new - t2))

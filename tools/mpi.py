@@ -404,21 +404,35 @@ def del_registry(reg_procs):
     return []
 
 def _init_on_workers(f_arg):
+    from pyscf.gto import mole
+    from pyscf.pbc.gto import cell
     from mpi4pyscf.tools import mpi
     module, name, args, kwargs = f_arg
-    if args is None and kwargs is None:
+    if args is None and kwargs is None:  # Not to call __init__ function on workers
         if module is None:  # master proccess
             obj = name
-            mpi.comm.bcast(obj.pack())
+            if hasattr(obj, 'mol'):
+                mol_str = obj.mol.dumps()
+            elif hasattr(obj, 'cell'):
+                mol_str = obj.cell.dumps()
+            else:
+                mol_str = None
+            mpi.comm.bcast((mol_str, obj.pack()))
         else:
             cls = getattr(importlib.import_module(module), name)
             obj = cls.__new__(cls)
-            obj.unpack_(mpi.comm.bcast(None))
+            mol_str, obj_attr = mpi.comm.bcast(None)
+            obj.unpack_(obj_attr)
+            if mol_str is not None:
+                if '_pseudo' in mol_str:
+                    obj.cell = cell.loads(mol_str)
+                elif '_bas' in mol_str:
+                    obj.mol = mole.loads(mol_str)
+
     elif module is None:  # master proccess
         obj = name
+
     else:
-        from pyscf.gto import mole
-        from pyscf.pbc.gto import cell
         # Guess whether the args[0] is the serialized mole or cell objects
         if isinstance(args[0], str) and args[0][0] == '{':
             if '_pseudo' in args[0]:
@@ -429,6 +443,7 @@ def _init_on_workers(f_arg):
                 args = (m,) + args[1:]
         cls = getattr(importlib.import_module(module), name)
         obj = cls(*args, **kwargs)
+
     key = id(obj)
     mpi._registry[key] = obj
     regs = mpi.comm.gather(key)
@@ -436,7 +451,7 @@ def _init_on_workers(f_arg):
 
 if rank == 0:
     from pyscf.gto import mole
-    def _init_and_register(cls, with_init_args):
+    def _init_and_register(cls, with__init__=True):
         old_init = cls.__init__
         def init(obj, *args, **kwargs):
             old_init(obj, *args, **kwargs)
@@ -451,7 +466,7 @@ if rank == 0:
                     regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
                                       (cls.__module__, cls.__name__,
                                        (args[0].dumps(),)+args[1:], kwargs))
-                elif with_init_args:
+                elif with__init__:
                     regs = pool.apply(_init_on_workers, (None, obj, args, kwargs),
                                       (cls.__module__, cls.__name__, args, kwargs))
                 else:
@@ -467,14 +482,23 @@ if rank == 0:
     def _with_exit(obj):
         obj._reg_procs = del_registry(obj._reg_procs)
 
-    def register_class(cls, with_init_args=True):
-        cls.__init__ = _init_and_register(cls, with_init_args)
+    def register_class(cls):
+        cls.__init__ = _init_and_register(cls)
+        cls.__enter__ = _with_enter
+        cls.__exit__ = _with_exit
+        cls.close = _with_exit
+        return cls
+
+    def register_class_without__init__(cls):
+        cls.__init__ = _init_and_register(cls, False)
         cls.__enter__ = _with_enter
         cls.__exit__ = _with_exit
         cls.close = _with_exit
         return cls
 else:
-    def register_class(cls, with_init_args=True):
+    def register_class(cls):
+        return cls
+    def register_class_without__init__(cls):
         return cls
 
 def _distribute_call(f_arg):
