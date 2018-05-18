@@ -41,7 +41,11 @@ BLKMIN = 4
 @mpi.parallel_call
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=False,
            verbose=logger.NOTE):
+    _sync_(mp)
     if mo_energy is None or mo_coeff is None:
+        if mp.mo_energy is None or mp.mo_coeff is None:
+            raise RuntimeError('mo_coeff, mo_energy are not initialized.\n'
+                               'You may need to call mf.kernel() to generate them.')
         mo_coeff = None
         mo_energy = mp2._mo_energy_without_core(mp, mp.mo_energy)
     else:
@@ -103,11 +107,6 @@ class MP2(mp2.MP2):
         return self
 
     def kernel(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=False):
-        if mo_energy is not None: self.mo_energy = mo_energy
-        if mo_coeff is not None: self.mo_coeff = mo_coeff
-        if self.mo_energy is None or self.mo_coeff is None:
-            raise RuntimeError('mo_coeff, mo_energy are not initialized.\n'
-                               'You may need to call mf.kernel() to generate them.')
         if self.verbose >= logger.WARN:
             self.check_sanity()
         self.dump_flags()
@@ -145,6 +144,7 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
     int2e = mol._add_suffix('int2e')
     ao2mopt = _ao2mo.AO2MOpt(mol, int2e, 'CVHFnr_schwarz_cond',
                              'CVHFsetnr_direct_scf')
+    fint = gto.moleintor.getints4c
 
     ntasks = mpi.pool.size
     olocs = [_task_location(nocc, task_id) for task_id in range(ntasks)]
@@ -164,21 +164,34 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
 
     mem_now = lib.current_memory()[0]
     max_memory = max(0, mp.max_memory - mem_now)
-    dmax = max(BLKMIN, min(nao//4+2, numpy.sqrt(max_memory*.9e6/8/(nao+nocc)*(nao_seg+nocc))))
-    dmax = min(comm.allgather(dmax))
+    dmax = numpy.sqrt(max_memory*.9e6/8/((nao+nocc)*(nao_seg+nocc)))
+    dmax = min(nao//4+2, max(BLKMIN, min(comm.allgather(dmax))))
     sh_ranges = ao2mo.outcore.balance_partition(ao_loc, dmax)
     sh_ranges = comm.bcast(sh_ranges)
     dmax = max(x[2] for x in sh_ranges)
-    eribuf = numpy.empty((nao,dmax,dmax,ao_loc1-ao_loc0))
+    eribuf = numpy.empty((nao,dmax,dmax,nao_seg))
     ftmp = lib.H5TmpFile()
     log.debug('max_memory %s MB (dmax = %s) required disk space %g MB',
               max_memory, dmax, nocc*nocc_seg*(nao*(nao+dmax)/2+nvir**2)*8/1e6)
 
-    fint = gto.moleintor.getints4c
+    def save(count, tmp_xo):
+        di, dj = tmp_xo.shape[2:4]
+        tmp_xo = [tmp_xo[p0:p1] for p0, p1 in olocs]
+        tmp_xo = mpi.alltoall(tmp_xo, split_recvbuf=True)
+        tmp_xo = sum(tmp_xo).reshape(nocc_seg,nocc,di,dj)
+        ftmp[str(count)+'b'] = tmp_xo
+
+        tmp_ox = mpi.alltoall([tmp_xo[:,p0:p1] for p0, p1 in olocs],
+                              split_recvbuf=True)
+        tmp_ox = [tmp_ox[i].reshape(p1-p0,nocc_seg,di,dj)
+                  for i, (p0,p1) in enumerate(olocs)]
+        tmp_ox = numpy.vstack(tmp_ox)
+        ftmp[str(count)+'a'] = tmp_ox
+
     jk_blk_slices = []
     count = 0
     time1 = time0
-    with lib.call_in_background(ftmp.__setitem__) as save:
+    with lib.call_in_background(save) as bg_save:
         for ip, (ish0, ish1, ni) in enumerate(sh_ranges):
             for jsh0, jsh1, nj in sh_ranges[:ip+1]:
                 i0, i1 = ao_loc[ish0], ao_loc[ish1]
@@ -191,20 +204,8 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
                            cintopt=ao2mopt._cintopt, out=eribuf)
                 tmp_xo = lib.einsum('pi,pqrs->iqrs', orbo, eri)
                 tmp_xo = lib.einsum('iqrs,sl->ilqr', tmp_xo, orbo_seg)
-
-                tmp_xo = [tmp_xo[p0:p1] for p0, p1 in olocs]
-                tmp_xo = mpi.alltoall(tmp_xo, split_recvbuf=True) #bg
-                tmp_xo = sum(tmp_xo).reshape(nocc_seg,nocc,(i1-i0),(j1-j0))
-
-                tmp_ox = mpi.alltoall([tmp_xo[:,p0:p1] for p0, p1 in olocs],
-                                      split_recvbuf=True)
-                tmp_ox = [tmp_ox[i].reshape(p1-p0,nocc_seg,(i1-i0),(j1-j0))
-                          for i, (p0,p1) in enumerate(olocs)]
-                tmp_ox = numpy.vstack(tmp_ox)
-
-                save(str(count)+'a', tmp_ox)
-                save(str(count)+'b', tmp_xo)
-                tmp_ox = tmp_xo = None
+                bg_save(count, tmp_xo)
+                tmp_xo = None
                 count += 1
                 time1 = log.timer_debug1('partial ao2mo [%d:%d,%d:%d]' %
                                          (ish0,ish1,jsh0,jsh1), *time1)
@@ -254,4 +255,7 @@ def _task_location(n, task=rank):
     loc0 = seg_size * task
     loc1 = min(n, loc0 + seg_size)
     return loc0, loc1
+
+def _sync_(mp):
+    return mp.unpack_(comm.bcast(mp.pack()))
 
