@@ -200,53 +200,68 @@ def update_amps(mycc, t1, t2, eris):
         wVOov = fswap['wVOov'][i0:i1]
         wVooV = fswap['wVooV'][i0:i1]
         eris_ovoo = eris.ovoo[:,i0:i1]
-        foo_priv += numpy.einsum('ck,kcji->ij', 2*t1T[p0:p1], eris_ovoo)
-        foo_priv += numpy.einsum('ck,icjk->ij',  -t1T[p0:p1], eris_ovoo)
-        tmp = lib.einsum('al,jaik->lkji', t1T[p0:p1], eris_ovoo)
-        woooo += tmp + tmp.transpose(1,0,3,2)
-        tmp = None
+        eris_oovv = numpy.empty((nocc,nocc,i1-i0,nvir))
+        def load_oovv(p0, p1):
+            eris_oovv[:] = eris.oovv[:,:,p0:p1]
+        with lib.call_in_background(load_oovv) as prefetch_oovv:
+            #:eris_oovv = eris.oovv[:,:,i0:i1]
+            prefetch_oovv(i0, i1)
+            foo_priv += numpy.einsum('ck,kcji->ij', 2*t1T[p0:p1], eris_ovoo)
+            foo_priv += numpy.einsum('ck,icjk->ij',  -t1T[p0:p1], eris_ovoo)
+            tmp = lib.einsum('al,jaik->lkji', t1T[p0:p1], eris_ovoo)
+            woooo += tmp + tmp.transpose(1,0,3,2)
+            tmp = None
 
-        wVOov -= lib.einsum('jbik,ak->bjia', eris_ovoo, t1T)
-        t2Tnew[i0:i1] += wVOov.transpose(0,3,1,2)
+            wVOov -= lib.einsum('jbik,ak->bjia', eris_ovoo, t1T)
+            t2Tnew[i0:i1] += wVOov.transpose(0,3,1,2)
 
-        wVooV += lib.einsum('kbij,ak->bija', eris_ovoo, t1T)
-        eris_ovoo = None
+            wVooV += lib.einsum('kbij,ak->bija', eris_ovoo, t1T)
+            eris_ovoo = None
+        load_oovv = prefetch_oovv = None
 
-        eris_oovv = eris.oovv[:,:,i0:i1]
-        t1T_priv[p0:p1] -= numpy.einsum('bj,jiab->ai', t1T, eris_oovv)
-        wVooV -= eris_oovv.transpose(2,0,1,3)
+        eris_ovvo = numpy.empty((nocc,i1-i0,nvir,nocc))
+        def load_ovvo(p0, p1):
+            eris_ovvo[:] = eris.ovvo[:,p0:p1]
+        with lib.call_in_background(load_ovvo) as prefetch_ovvo:
+            #:eris_ovvo = eris.ovvo[:,i0:i1]
+            prefetch_ovvo(i0, i1)
+            t1T_priv[p0:p1] -= numpy.einsum('bj,jiab->ai', t1T, eris_oovv)
+            wVooV -= eris_oovv.transpose(2,0,1,3)
+            wVOov += wVooV*.5  #: bjia + bija*.5
+        load_ovvo = prefetch_ovvo = None
 
-        eris_voov = eris.ovvo[:,i0:i1].transpose(1,0,3,2)
-        t2Tnew[i0:i1] += eris_voov.transpose(0,3,1,2) * .5
-        t1T_priv[p0:p1] += 2*numpy.einsum('bj,aijb->ai', t1T, eris_voov)
+        def update_wVooV(i0, i1):
+            wVooV[:] += fswap['wVooV1'][i0:i1]
+            fswap['wVooV1'][i0:i1] = wVooV
+            wVOov[:] += fswap['wVOov1'][i0:i1]
+            fswap['wVOov1'][i0:i1] = wVOov
+        with lib.call_in_background(update_wVooV) as update_wVooV:
+            update_wVooV(i0, i1)
+            eris_voov = eris_ovvo[:,i0:i1].transpose(1,0,3,2)
+            eris_ovvo = None
+            t2Tnew[i0:i1] += eris_voov.transpose(0,3,1,2) * .5
+            t1T_priv[p0:p1] += 2*numpy.einsum('bj,aijb->ai', t1T, eris_voov)
 
-        tmp  = lib.einsum('ci,kjbc->bijk', t1T, eris_oovv)
-        tmp += lib.einsum('bjkc,ci->bjik', eris_voov, t1T)
-        t2Tnew[i0:i1] -= numpy.einsum('bjik,ak->baji', tmp, t1T)
-        eris_oovv = tmp = None
+            tmp  = lib.einsum('ci,kjbc->bijk', t1T, eris_oovv)
+            tmp += lib.einsum('bjkc,ci->bjik', eris_voov, t1T)
+            t2Tnew[i0:i1] -= lib.einsum('bjik,ak->baji', tmp, t1T)
+            eris_oovv = tmp = None
 
-        fov_priv[:,p0:p1] += numpy.einsum('ck,aikc->ia', t1T, eris_voov) * 2
-        fov_priv[:,p0:p1] -= numpy.einsum('ck,akic->ia', t1T, eris_voov)
+            fov_priv[:,p0:p1] += numpy.einsum('ck,aikc->ia', t1T, eris_voov) * 2
+            fov_priv[:,p0:p1] -= numpy.einsum('ck,akic->ia', t1T, eris_voov)
 
-        tau  = numpy.einsum('ai,bj->abij', t1T[p0:p1]*.5, t1T)
-        tau += t2T[i0:i1]
-        theta  = tau.transpose(0,1,3,2) * 2
-        theta -= tau
-        fvv_priv -= lib.einsum('caij,cjib->ab', theta, eris_voov)
-        foo_priv += lib.einsum('aikb,abkj->ij', eris_voov, theta)
-        tau = theta = None
+            tau  = numpy.einsum('ai,bj->abij', t1T[p0:p1]*.5, t1T)
+            tau += t2T[i0:i1]
+            theta  = tau.transpose(0,1,3,2) * 2
+            theta -= tau
+            fvv_priv -= lib.einsum('caij,cjib->ab', theta, eris_voov)
+            foo_priv += lib.einsum('aikb,abkj->ij', eris_voov, theta)
+            tau = theta = None
 
-        wVOov += wVooV*.5  #: bjia + bija*.5
-
-        tau = t2T[i0:i1] + numpy.einsum('ai,bj->abij', t1T[p0:p1], t1T)
-        woooo += lib.einsum('abij,aklb->ijkl', tau, eris_voov)
-        tau = None
-
-        wVooV += fswap['wVooV1'][i0:i1]
-        fswap['wVooV1'][i0:i1] = wVooV
-        wVOov += fswap['wVOov1'][i0:i1]
-        fswap['wVOov1'][i0:i1] = wVOov
-        eris_VOov = wVOov = wVooV = None
+            tau = t2T[i0:i1] + numpy.einsum('ai,bj->abij', t1T[p0:p1], t1T)
+            woooo += lib.einsum('abij,aklb->ijkl', tau, eris_voov)
+            tau = None
+        eris_VOov = wVOov = wVooV = update_wVooV = None
         time1 = log.timer_debug1('voov [%d:%d]'%(p0, p1), *time1)
 
     wVooV = numpy.asarray(fswap['wVooV1'])
