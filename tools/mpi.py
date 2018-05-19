@@ -50,9 +50,12 @@ def work_balanced_partition(tasks, costs=None):
 
 INQUIRY = 50050
 TASK = 50051
-def work_share_partition(tasks, interval=.02, loadmin=1):
+def work_share_partition(tasks, interval=.02, loadmin=2):
+    loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
     loadmin = max(loadmin, len(tasks)//50//pool.size)
-    rest_tasks = [x for x in tasks[loadmin*pool.size:]]
+    if rank == 0:
+        rest_tasks = tasks[loadmin*pool.size:]
+
     tasks = tasks[loadmin*rank:loadmin*rank+loadmin]
     def distribute_task():
         while True:
@@ -69,11 +72,12 @@ def work_share_partition(tasks, interval=.02, loadmin=1):
                         comm.send('OUT_OF_TASK', i, tag=TASK)
             else:
                 comm.send(load, 0, tag=INQUIRY)
+
+            time.sleep(interval)
             if comm.Iprobe(source=0, tag=TASK):
                 tasks.append(comm.recv(source=0, tag=TASK))
                 if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
                     return
-            time.sleep(interval)
 
     tasks_handler = threading.Thread(target=distribute_task)
     tasks_handler.start()
@@ -307,14 +311,8 @@ def alltoall(sendbuf, split_recvbuf=False):
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
 
-    blksize = INT_MAX - 7
-    max_counts = numpy.max(scounts)
-    nsteps = max(comm.allgather((max_counts+blksize-1)//blksize))
-    #DONOT lib.prange. lib.prange may terminate early in some processes
-    #:for p0, p1 in lib.prange(0, numpy.max(scounts), INT_MAX-7):
-    for istep in range(nsteps):
-        p0 = min(max_counts, istep * blksize)
-        p1 = min(max_counts, (istep+1) * blksize)
+    #DONOT use lib.prange. lib.prange may terminate early in some processes
+    for p0, p1 in prange(0, numpy.max(scounts), INT_MAX-7):
         scounts_seg = scounts - p0
         rcounts_seg = rcounts - p0
         scounts_seg[scounts_seg<0] = 0
@@ -327,26 +325,32 @@ def alltoall(sendbuf, split_recvbuf=False):
     else:
         return recvbuf
 
-def sendrecv(sendbuf, source=0, dest=0):
+def send(sendbuf, dest=0, tag=0):
+    sendbuf = numpy.asarray(sendbuf, order='C')
+    comm.send((sendbuf.shape, sendbuf.dtype), dest=dest, tag=tag)
+    send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
+    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX-7):
+        comm.Send(send_seg[p0:p1], dest=dest, tag=tag)
+    return sendbuf
+
+def recv(source=0, tag=0):
+    shape, dtype = comm.recv(source=source, tag=tag)
+    recvbuf = numpy.empty(shape, dtype=dtype)
+    recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
+    for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
+        comm.Recv(recv_seg[p0:p1], source=source, tag=tag)
+    return recvbuf
+
+def sendrecv(sendbuf, source=0, dest=0, tag=0):
     if source == dest:
         return sendbuf
 
     if rank == source:
-        sendbuf = numpy.asarray(sendbuf, order='C')
-        comm.send((sendbuf.shape, sendbuf.dtype), dest=dest)
-        send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
-        for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX-7):
-            comm.Send(send_seg[p0:p1], dest=dest)
-        return sendbuf
+        send(sendbuf, dest, tag)
     elif rank == dest:
-        shape, dtype = comm.recv(source=source)
-        recvbuf = numpy.empty(shape, dtype=dtype)
-        recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
-        for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX-7):
-            comm.Recv(recv_seg[p0:p1], source=source)
-        return recvbuf
+        return recv(source, tag)
 
-def rotate(sendbuf, blocking=True):
+def rotate(sendbuf, blocking=True, tag=0):
     '''On every process, pass the sendbuf to the next process.
     Node-ID  Before-rotate  After-rotate
     node-0   buf-0          buf-1
@@ -370,24 +374,23 @@ def rotate(sendbuf, blocking=True):
     if isinstance(sendbuf, numpy.ndarray):
         if blocking:
             if rank % 2 == 0:
-                sendrecv(sendbuf, rank, prev_node)
-                recvbuf = sendrecv(None, next_node, rank)
+                send(sendbuf, prev_node, tag)
+                recvbuf = recv(next_node, tag)
             else:
-                recvbuf = sendrecv(None, next_node, rank)
-                sendrecv(sendbuf, rank, prev_node)
+                recvbuf = recv(next_node, tag)
+                send(sendbuf, prev_node, tag)
         else:
-            handler = lib.ThreadWithTraceBack(target=sendrecv,
-                                              args=(sendbuf, rank, prev_node))
+            handler = lib.ThreadWithTraceBack(target=send, args=(sendbuf, prev_node, tag))
             handler.start()
-            recvbuf = sendrecv(None, next_node, rank)
+            recvbuf = recv(next_node, tag)
             handler.join()
     else:
         if rank % 2 == 0:
-            comm.send(sendbuf, dest=next_node)
-            recvbuf = comm.recv(source=prev_node)
+            comm.send(sendbuf, dest=next_node, tag=tag)
+            recvbuf = comm.recv(source=prev_node, tag=tag)
         else:
-            recvbuf = comm.recv(source=prev_node)
-            comm.send(sendbuf, dest=next_node)
+            recvbuf = comm.recv(source=prev_node, tag=tag)
+            comm.send(sendbuf, dest=next_node, tag=tag)
     return recvbuf
 
 def _assert(condition):
@@ -580,4 +583,16 @@ if rank == 0:
 else:
     def call_then_reduce(f):
         return f
+
+
+def prange(start, stop, step):
+    '''Similar to lib.prange. This function ensures that all processes have the
+    same number of steps.  It is required by alltoall communication.
+    '''
+    nsteps = (stop - start + step - 1) // step
+    nsteps = max(comm.allgather(nsteps))
+    for i in range(nsteps):
+        i0 = min(stop, start + i * step)
+        i1 = min(stop, i0 + step)
+        yield i0, i1
 

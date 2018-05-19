@@ -185,8 +185,7 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
                               split_recvbuf=True)
         tmp_ox = [tmp_ox[i].reshape(p1-p0,nocc_seg,di,dj)
                   for i, (p0,p1) in enumerate(olocs)]
-        tmp_ox = numpy.vstack(tmp_ox)
-        ftmp[str(count)+'a'] = tmp_ox
+        ftmp[str(count)+'a'] = numpy.vstack(tmp_ox)
 
     jk_blk_slices = []
     count = 0

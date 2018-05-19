@@ -13,6 +13,7 @@ from pyscf import __config__
 from mpi4pyscf.lib import logger
 from mpi4pyscf.lib import diis
 from mpi4pyscf.tools import mpi
+from mpi4pyscf.cc import ccsd_t
 
 comm = mpi.comm
 rank = mpi.rank
@@ -68,6 +69,10 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
         if abs(eccsd-eold) < tol and normt < tolnormt:
             conv = True
             break
+
+    mycc.e_corr = eccsd
+    mycc.t1 = t1
+    mycc.t2 = t2
     log.timer('CCSD', *cput0)
     return conv, eccsd, t1, t2
 
@@ -840,6 +845,9 @@ class CCSD(ccsd.CCSD):
 
     restore_from_diis_ = restore_from_diis_
 
+    def ccsd_t(self):
+        return ccsd_t.kernel(self)
+
 CC = RCCSD = CCSD
 
 @mpi.parallel_call
@@ -933,15 +941,9 @@ def _make_eris_outcore(mycc, mo_coeff=None):
             save_occ_frac(p0, p1, dat)
 
         blksize = min(comm.allgather(blksize))
-        nsteps = max(comm.allgather((vseg+blksize-1) // blksize))
-        vsteps = [(min(vloc1, vloc0+i*blksize), min(vloc1, vloc0+(i+1)*blksize))
-                  for i in range(nsteps)]
         norb_max = nocc + vseg
         fload(fswap['0'], nocc**2, min(nocc+blksize,norb_max)*nocc, buf_prefetch)
-        #DONOT use lib.prange. Different processes may have different number
-        #of steps. alltoall communication may be stuck.
-        #for p0, p1 in lib.prange(0, vseg, blksize):
-        for p0, p1 in vsteps:
+        for p0, p1 in mpi.prange(vloc0, vloc1, blksize):
             i0, i1 = p0 - vloc0, p1 - vloc0
             nrow = (p1 - p0) * nocc
             buf, buf_prefetch = buf_prefetch, buf
