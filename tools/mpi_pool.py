@@ -108,7 +108,7 @@ class MPIPool(object):
 
             else:  # message are function args
                 self.worker_status = 'R'
-                ans = self.function(task)
+                ans = self.function(*task)  # task = worker_args
                 if isinstance(ans, types.GeneratorType):
                     print('\nWARNING\n  Function {0} returns generator {1}.\n'
                           '  The generator was consumed to avoid workers getting stuck.\n'
@@ -138,7 +138,7 @@ class MPIPool(object):
         # Send all the tasks off and wait for them to be received.
         self.comm.bcast(worker_args)
 
-        result = function(master_args)
+        result = function(*master_args)
         self.worker_status = 'P'
         return result
 

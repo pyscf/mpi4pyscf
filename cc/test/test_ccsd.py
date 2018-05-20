@@ -54,8 +54,7 @@ v1, v2 = mycc.update_amps(t1, t2, eris)
 print(lib.finger(v1) - 9.6029949445427079)
 print(lib.finger(v2) - 4.5308876217231813)
 
-def on_node(args):
-    reg_procs, t1 = args
+def on_node(reg_procs, t1):
     from mpi4pyscf.tools import mpi
     mycc1 = mpi._registry[reg_procs[mpi.rank]]
     t2 = mycc1.t2

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import os
 import time
 import ctypes
 import numpy
@@ -484,7 +485,7 @@ def _add_vvvv_full(mycc, t1T, t2T, eris, out=None, with_ovvv=False):
 def _task_location(n, task=rank):
     ntasks = mpi.pool.size
     seg_size = (n + ntasks - 1) // ntasks
-    loc0 = seg_size * task
+    loc0 = min(n, seg_size * task)
     loc1 = min(n, loc0 + seg_size)
     return loc0, loc1
 
@@ -723,11 +724,11 @@ def distribute_amplitudes_(mycc, t1=None, t2=None):
         for task_id in range(mpi.pool.size):
             loc0, loc1 = _task_location(nvir, task_id)
             t2_all.append(t2T[loc0:loc1])
-        t2T = mpi.comm.scatter(t2_all)
+        t2T = mpi.scatter(t2_all)
         mpi.bcast(t1)
     else:
-        t2T = mpi.comm.scatter(None)
-        t1 = mpi.bcast()
+        t2T = mpi.scatter(None)
+        t1 = mpi.bcast(None)
     mycc.t1 = t1
     mycc.t2 = t2T.transpose(2,3,0,1)
     return mycc.t2
@@ -749,12 +750,26 @@ def _diff_norm(mycc, t1new, t2new, t1, t2):
 @mpi.parallel_call
 def restore_from_diis_(mycc, diis_file, inplace=True):
     _sync_(mycc)
-    adiis = diis.DistributedDIIS(mycc, mycc.diis_file)
-    adiis.restore(diis_file, inplace=inplace)
-    ccvec = adiis.extrapolate()
-    mycc.t1, mycc.t2 = mycc.vector_to_amplitudes(ccvec)
-    if inplace:
-        mycc.diis = adiis
+    if all(comm.allgather(os.path.isfile(diis_file + '__rank' + str(rank)))):
+        adiis = diis.DistributedDIIS(mycc, mycc.diis_file)
+        adiis.restore(diis_file, inplace=inplace)
+        ccvec = adiis.extrapolate()
+        mycc.t1, mycc.t2 = mycc.vector_to_amplitudes(ccvec)
+        if inplace:
+            mycc.diis = adiis
+
+    else:  # Single DIIS file from serial running
+        if rank == 0:
+            from pyscf.cc import ccsd
+            nmo = mycc.nmo
+            nocc = mycc.nocc
+            adiis = lib.diis.restore(diis_file)
+            ccvec = adiis.extrapolate()
+            t1, t2 = ccsd.vector_to_amplitudes(ccvec, nmo, nocc)
+        else:
+            t1 = t2 = None
+        mycc.distribute_amplitudes_(t1, t2)
+
     return mycc
 
 # Temporarily placed here.  Move it to mpi_scf module in the future
@@ -796,7 +811,7 @@ class CCSD(ccsd.CCSD):
     def __init__(self, mf, frozen=0, mo_coeff=None, mo_occ=None):
         ccsd.CCSD.__init__(self, mf, frozen, mo_coeff, mo_occ)
         self.direct = True
-        regs = mpi.pool.apply(_init_ccsd, self, (None,))
+        regs = mpi.pool.apply(_init_ccsd, (self,), (None,))
         self._reg_procs = regs
 
     def pack(self):

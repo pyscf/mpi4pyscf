@@ -211,10 +211,8 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
     eri = eribuf = None
     time1 = time0 = log.timer('mp2 ao2mo_ovov pass1', *time0)
 
-    chunks = (1,nvir,1,nvir)
-    eris.ovov = eris.feri.create_dataset('ovov', (nocc,nvir,nocc_seg,nvir), 'f8',
-                                         chunks=chunks)
-    occblk = int(min(nocc, max(BLKMIN, max_memory*.9e6/8/(nao**2*nocc_seg)/5)))
+    eris.ovov = eris.feri.create_dataset('ovov', (nocc,nvir,nocc_seg,nvir), 'f8')
+    occblk = int(min(nocc, max(BLKMIN, max_memory*.9e6/8/(nao**2*nocc_seg+1)/5)))
     def load(i0, eri):
         if i0 < nocc:
             i1 = min(i0+occblk, nocc)
@@ -251,7 +249,7 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
 def _task_location(n, task=rank):
     ntasks = mpi.pool.size
     seg_size = (n + ntasks - 1) // ntasks
-    loc0 = seg_size * task
+    loc0 = min(n, seg_size * task)
     loc1 = min(n, loc0 + seg_size)
     return loc0, loc1
 
