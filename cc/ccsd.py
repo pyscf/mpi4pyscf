@@ -358,7 +358,6 @@ def _add_vvvv_tril(mycc, t1T, t2T, eris, out=None, with_ovvv=None):
         tau = t2T + numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
         tau = lib.pack_tril(tau.reshape(nvir_seg*nvir,nocc,nocc))
     tau = tau.reshape(nvir_seg,nvir,nocc2)
-    max_memory = max(0, mycc.max_memory - lib.current_memory()[0])
 
     if mycc.direct:   # AO-direct CCSD
         mo = getattr(eris, 'mo_coeff', None)
@@ -383,8 +382,7 @@ def _add_vvvv_tril(mycc, t1T, t2T, eris, out=None, with_ovvv=None):
         tau = None
         time1 = log.timer_debug1('vvvv-tau mo2ao', *time0)
 
-        buf = _contract_vvvv_t2(mycc, None, tau_priv, task_sh_locs, None,
-                                max_memory, log)
+        buf = _contract_vvvv_t2(mycc, None, tau_priv, task_sh_locs, None, log)
         buf = buf_ao = buf.reshape(tau_priv.shape)
         tau_priv = None
         time1 = log.timer_debug1('vvvv-tau contraction', *time1)
@@ -438,7 +436,6 @@ def _add_vvvv_full(mycc, t1T, t2T, eris, out=None, with_ovvv=False):
         tau = t2T + numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
         tau = lib.pack_tril(tau.reshape(nvir_seg*nvir,nocc2))
     tau = tau.reshape(nvir_seg,nvir,nocc2)
-    max_memory = max(0, mycc.max_memory - lib.current_memory()[0])
 
     if mycc.direct:   # AO-direct CCSD
         if with_ovvv:
@@ -463,8 +460,7 @@ def _add_vvvv_full(mycc, t1T, t2T, eris, out=None, with_ovvv=False):
         tau = None
         time1 = log.timer_debug1('vvvv-tau mo2ao', *time0)
 
-        buf = _contract_vvvv_t2(mycc, None, tau_priv, task_sh_locs, None,
-                                max_memory, log)
+        buf = _contract_vvvv_t2(mycc, None, tau_priv, task_sh_locs, None, log)
         buf = buf.reshape(tau_priv.shape)
         tau_priv = None
         time1 = log.timer_debug1('vvvv-tau contraction', *time1)
@@ -522,8 +518,7 @@ else:
             yield task, buf
 
 
-def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN,
-                      verbose=None):
+def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, verbose=None):
     '''Ht2 = numpy.einsum('ijcd,acbd->ijab', t2, vvvv)
     where vvvv has to be real and has the 4-fold permutation symmetry
 
@@ -554,13 +549,13 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, max_memory=MEMORYMIN
                eri.reshape(ic*nvirb,jc*nvirb), t2T.reshape(-1,nocc2),
                Ht2.reshape(nvir2,nocc2), 1, 1, 0, i0*nvirb*nocc2, j0*nvirb*nocc2)
 
+    max_memory = max(MEMORYMIN, mycc.max_memory - lib.current_memory()[0])
     if vvvv is None:   # AO-direct CCSD
         ao_loc = mol.ao_loc_nr()
         intor = mol._add_suffix('int2e')
         ao2mopt = _ao2mo.AO2MOpt(mol, intor, 'CVHFnr_schwarz_cond',
                                  'CVHFsetnr_direct_scf')
-        max_words = max(0, max_memory*.95e6/8-t2T.size*2)
-        blksize = max(BLKMIN, numpy.sqrt(max_words/nvirb**2/2))
+        blksize = max(BLKMIN, numpy.sqrt(max_memory*.9e6/8/nvirb**2/2))
         fint = gto.moleintor.getints4c
         fload = ccsd._ccsd.libcc.CCload_eri
 
