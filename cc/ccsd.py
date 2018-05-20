@@ -13,7 +13,6 @@ from pyscf import __config__
 from mpi4pyscf.lib import logger
 from mpi4pyscf.lib import diis
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.cc import ccsd_t
 
 comm = mpi.comm
 rank = mpi.rank
@@ -709,11 +708,13 @@ def energy(mycc, t1=None, t2=None, eris=None):
     return e.real
 
 @mpi.parallel_call
-def distribute_t2_(mycc, t2=None):
+def distribute_amplitudes_(mycc, t1=None, t2=None):
     '''Distribute the entire t2 amplitudes tensor (nocc,nocc,nvir,nvir) to
     different processes
     '''
+    _sync_(mycc)
     if rank == 0:
+        if t1 is None: t1 = mycc.t1
         if t2 is None: t2 = mycc.t2
         nocc = t2.shape[0]
         nvir = t2.shape[2]
@@ -723,8 +724,11 @@ def distribute_t2_(mycc, t2=None):
             loc0, loc1 = _task_location(nvir, task_id)
             t2_all.append(t2T[loc0:loc1])
         t2T = mpi.comm.scatter(t2_all)
+        mpi.bcast(t1)
     else:
         t2T = mpi.comm.scatter(None)
+        t1 = mpi.bcast()
+    mycc.t1 = t1
     mycc.t2 = t2T.transpose(2,3,0,1)
     return mycc.t2
 
@@ -744,6 +748,7 @@ def _diff_norm(mycc, t1new, t2new, t1, t2):
 @lib.with_doc(ccsd.restore_from_diis_.__doc__)
 @mpi.parallel_call
 def restore_from_diis_(mycc, diis_file, inplace=True):
+    _sync_(mycc)
     adiis = diis.DistributedDIIS(mycc, mycc.diis_file)
     adiis.restore(diis_file, inplace=inplace)
     ccvec = adiis.extrapolate()
@@ -860,7 +865,11 @@ class CCSD(ccsd.CCSD):
 
     restore_from_diis_ = restore_from_diis_
 
+    distribute_amplitudes_ = distribute_amplitudes_
+    gather_amplitudes = gather_amplitudes
+
     def ccsd_t(self):
+        from mpi4pyscf.cc import ccsd_t
         return ccsd_t.kernel(self)
 
 CC = RCCSD = CCSD

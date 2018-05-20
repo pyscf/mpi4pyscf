@@ -29,6 +29,7 @@ from pyscf.cc import _ccsd
 
 from mpi4py import MPI
 from mpi4pyscf.lib import logger
+from mpi4pyscf.cc import ccsd
 from mpi4pyscf.tools import mpi
 
 comm = mpi.comm
@@ -38,14 +39,18 @@ rank = mpi.rank
 @mpi.parallel_call
 def kernel(mycc):
     cpu1 = cpu0 = (time.clock(), time.time())
+    ccsd._sync_(mycc)
     log = logger.new_logger(mycc)
+
+    eris = getattr(mycc, '_eris', None)
+    if eris is None:
+        mycc.ao2mo(mycc.mo_coeff)
+        eris = mycc._eris
 
     t1T = mycc.t1.T
     nvir, nocc = t1T.shape
-    nmo = nocc + nvir
 
     cpu2 = list(cpu1)
-    eris = mycc._eris
     fvo = eris.fock[nocc:,:nocc].copy()
     mo_energy = eris.fock.diagonal().copy()
     et_sum = numpy.zeros(1, dtype=t1T.dtype)
@@ -61,7 +66,7 @@ def kernel(mycc):
             fvo.ctypes.data_as(ctypes.c_void_p),
             ctypes.c_int(nocc), ctypes.c_int(nvir),
             (ctypes.c_int*6)(*slices), data_ptrs)
-        cpu2[:] = log.timer_debug1('contract %d:%d,%d:%d'%(a0,a1,b0,b1), *cpu2)
+        cpu2[:] = log.alltimer_debug1('contract'+str(slices), *cpu2)
 
     with GlobalDataHandler(mycc) as daemon:
         v_seg_ranges = daemon.data_partition
@@ -70,13 +75,19 @@ def kernel(mycc):
             for kb, (b0, b1) in enumerate(v_seg_ranges[:ka+1]):
                 for c0, c1 in v_seg_ranges[:kb+1]:
                     tasks.append((a0, a1, b0, b1, c0, c1))
+        log.debug('ntasks = %d', len(tasks))
 
+        task_count = 0
         with lib.call_in_background(contract) as async_contract:
-            for task in mpi.work_share_partition(tasks, loadmin=10):
-                log.all_debug2('segment_location %s', task)
+            #for task in mpi.static_partition(tasks):
+            #for task in mpi.work_stealing_partition(tasks):
+            for task in mpi.work_share_partition(tasks, loadmin=2):
+                log.alldebug2('segment_location %s', task)
                 data = [None] * 12
                 daemon.request_(task, data)
                 async_contract(task, data)
+                task_count += 1
+        log.alldebug1('task_count = %d', task_count)
 
     et = comm.allreduce(et_sum[0] * 2).real
     log.timer('CCSD(T)', *cpu0)
@@ -99,7 +110,7 @@ class GlobalDataHandler(object):
         nvir_seg = (nvir + mpi.pool.size - 1) // mpi.pool.size
         max_memory = mycc.max_memory - lib.current_memory()[0]
         blksize = int(max(BLKMIN, (max_memory*.9e6/8/(6*nvir*nocc))**.5 - nocc/4))
-        blksize = min(nvir//4+2, nvir_seg, min(comm.allgather(blksize)))
+        blksize = min(comm.allgather(min(nvir//6+2, nvir_seg//2+1, blksize)))
         logger.debug1(mycc, 'GlobalDataHandler blksize %s', blksize)
 
         self.vranges = []
@@ -113,6 +124,7 @@ class GlobalDataHandler(object):
             for j0, j1 in lib.prange(p0, p1, blksize):
                 self.data_partition.append((j0, j1))
                 self.segment_location[j0] = task
+        logger.debug1(mycc, 'data_partition %s', self.data_partition)
         logger.debug1(mycc, 'segment_location %s', self.segment_location)
 
     def request_(self, slices, data):
@@ -145,8 +157,8 @@ class GlobalDataHandler(object):
 
         def get(data_idx, tensors, loc):
             if loc == rank:
-                for k, (name, slices) in zip(data_idx, tensors):
-                    data[k] = numpy.asarray(self._get_tensor(name, slices), order='C')
+                for k, (name, s) in zip(data_idx, tensors):
+                    data[k] = numpy.asarray(self._get_tensor(name, s), order='C')
             else:
                 comm.send((tensors, rank), dest=loc, tag=INQUIRY)
                 for k in data_idx:
@@ -174,23 +186,25 @@ class GlobalDataHandler(object):
         nvir_seg = vloc1 - vloc0
 
         max_memory = mycc.max_memory - lib.current_memory()[0]
-        blksize = min(nvir, max(16, int(max_memory*.3e6/8/(nvir*nocc*nmo))))
+        blksize = min(nvir_seg//4+1, max(16, int(max_memory*.3e6/8/(nvir*nocc*nmo))))
         self.eri_tmp = lib.H5TmpFile()
         vvop = self.eri_tmp.create_dataset('vvop', (nvir_seg,nvir,nocc,nmo), 'f8')
-        with lib.call_in_background(vvop.__setitem__) as save:
+
+        def save_vvop(j0, j1, vvvo):
+            buf = numpy.empty((j1-j0,nvir,nocc,nmo), dtype=t2T.dtype)
+            buf[:,:,:,:nocc] = eris.ovov[:,j0:j1].conj().transpose(1,3,0,2)
+            for k, (q0, q1) in enumerate(self.vranges):
+                blk = vvvo[k].reshape(q1-q0,nvir,j1-j0,nocc)
+                buf[:,q0:q1,:,nocc:] = blk.transpose(2,0,3,1)
+            vvop[j0:j1] = buf
+
+        with lib.call_in_background(save_vvop) as save_vvop:
             for p0, p1 in mpi.prange(vloc0, vloc1, blksize):
                 j0, j1 = p0 - vloc0, p1 - vloc0
                 sub_locs = comm.allgather((p0,p1))
                 vvvo = mpi.alltoall([eris.vvvo[:,:,q0:q1] for q0, q1 in sub_locs],
                                     split_recvbuf=True)
-
-                buf = numpy.empty((p1-p0,nvir,nocc,nmo), dtype=t2T.dtype)
-                buf[:,:,:,:nocc] = eris.ovov[:,j0:j1].conj().transpose(1,3,0,2)
-                for k, (q0, q1) in enumerate(self.vranges):
-                    blk = vvvo[k].reshape(q1-q0,nvir,p1-p0,nocc)
-                    buf[:,q0:q1,:,nocc:] = blk.transpose(2,0,3,1)
-                save(slice(j0,j1,None), buf)
-                buf = vvvo = sub_locs = blk = None
+                save_vvop(j0, j1, vvvo)
                 cpu1 = log.timer_debug1('transpose %d:%d'%(p0,p1), *cpu1)
 
         def send_data():
@@ -229,17 +243,18 @@ class GlobalDataHandler(object):
         return tensor
 
     def close(self):
-        if rank == 0:
-            for i in range(mpi.pool.size):
-                comm.send(([('Done', None)], None), dest=i, tag=INQUIRY)
-        self.daemon.join()
+        if self.daemon.is_alive():
+            if rank == 0:
+                for i in range(mpi.pool.size):
+                    comm.send(([('Done', None)], None), dest=i, tag=INQUIRY)
+            self.daemon.join()
+        self.eri_tmp = None
 
     def __enter__(self):
         self.daemon = self.start()
         return self
 
     def __exit__(self, type, value, traceback):
+        comm.barrier()  # To avoid closing daemon before last request.
         self.close()
-        self.eri_tmp = None
-
 
