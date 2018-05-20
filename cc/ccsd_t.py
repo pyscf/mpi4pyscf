@@ -73,6 +73,7 @@ def kernel(mycc):
 
         with lib.call_in_background(contract) as async_contract:
             for task in mpi.work_share_partition(tasks, loadmin=10):
+                log.all_debug2('segment_location %s', task)
                 data = [None] * 12
                 daemon.request_(task, data)
                 async_contract(task, data)
@@ -99,6 +100,7 @@ class GlobalDataHandler(object):
         max_memory = mycc.max_memory - lib.current_memory()[0]
         blksize = int(max(BLKMIN, (max_memory*.9e6/8/(6*nvir*nocc))**.5 - nocc/4))
         blksize = min(nvir//4+2, nvir_seg, min(comm.allgather(blksize)))
+        logger.debug1(mycc, 'GlobalDataHandler blksize %s', blksize)
 
         self.vranges = []
         self.data_partition = []

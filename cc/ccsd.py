@@ -228,6 +228,8 @@ def update_amps(mycc, t1, t2, eris):
             t1T_priv[p0:p1] -= numpy.einsum('bj,jiab->ai', t1T, eris_oovv)
             wVooV -= eris_oovv.transpose(2,0,1,3)
             wVOov += wVooV*.5  #: bjia + bija*.5
+        eris_voov = eris_ovvo.transpose(1,0,3,2)
+        eris_ovvo = None
         load_ovvo = prefetch_ovvo = None
 
         def update_wVooV(i0, i1):
@@ -237,8 +239,6 @@ def update_amps(mycc, t1, t2, eris):
             fswap['wVOov1'][i0:i1] = wVOov
         with lib.call_in_background(update_wVooV) as update_wVooV:
             update_wVooV(i0, i1)
-            eris_voov = eris_ovvo[:,i0:i1].transpose(1,0,3,2)
-            eris_ovvo = None
             t2Tnew[i0:i1] += eris_voov.transpose(0,3,1,2) * .5
             t1T_priv[p0:p1] += 2*numpy.einsum('bj,aijb->ai', t1T, eris_voov)
 
