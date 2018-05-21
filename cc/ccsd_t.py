@@ -38,7 +38,7 @@ rank = mpi.rank
 
 @mpi.parallel_call
 def kernel(mycc):
-    cpu1 = cpu0 = (time.clock(), time.time())
+    cpu0 = (time.clock(), time.time())
     ccsd._sync_(mycc)
     log = logger.new_logger(mycc)
 
@@ -50,11 +50,11 @@ def kernel(mycc):
     t1T = numpy.asarray(mycc.t1.T, order='C')
     nvir, nocc = t1T.shape
 
-    cpu2 = list(cpu1)
     fvo = eris.fock[nocc:,:nocc].copy()
     mo_energy = eris.fock.diagonal().copy()
     et_sum = numpy.zeros(1, dtype=t1T.dtype)
     drv = _ccsd.libcc.MPICCsd_t_contract
+    cpu2 = [time.clock(), time.time()]
     def contract(slices, data):
         #vvop_ab, vvop_ac, vvop_ba, vvop_bc, vvop_ca, vvop_cb, \
         #        vooo_a, vooo_b, vooo_c, t2T_a, t2T_b, t2T_c = data

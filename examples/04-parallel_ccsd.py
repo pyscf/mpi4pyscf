@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 '''
-mpirun -np 2 python parallel_ccsd.py
+mpirun -np 2 python 04-parallel_ccsd.py
 '''
 
 from pyscf import gto

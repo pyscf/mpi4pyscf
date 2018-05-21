@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 '''
-mpirun -np 2 python parallel_mp2.py
+mpirun -np 2 python 04-parallel_mp2.py
 '''
 
 from pyscf import gto
