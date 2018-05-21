@@ -62,7 +62,7 @@ def on_node(reg_procs, t1):
     t1, t2 = mycc1.update_amps(t1, t2, eris)
     t2 = mpi.gather(t2.transpose(2,3,0,1)).transpose(2,3,0,1)
     return t1, t2
-mpicc.ccsd.distribute_t2_(mycc1, t2)
+mpicc.ccsd.distribute_amplitudes_(mycc1, t1, t2)
 x1, x2 = mpi.pool.apply(on_node, (mycc1._reg_procs, t1), (mycc1._reg_procs, t1))
 print(lib.finger(x1) - 9.6029949445427079)
 print(lib.finger(x2) - 4.5308876217231813)

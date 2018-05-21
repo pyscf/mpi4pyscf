@@ -47,7 +47,7 @@ def kernel(mycc):
         mycc.ao2mo(mycc.mo_coeff)
         eris = mycc._eris
 
-    t1T = mycc.t1.T
+    t1T = numpy.asarray(mycc.t1.T, order='C')
     nvir, nocc = t1T.shape
 
     cpu2 = list(cpu1)
@@ -185,7 +185,7 @@ class GlobalDataHandler(object):
         vloc0, vloc1 = self.vranges[rank]
         nvir_seg = vloc1 - vloc0
 
-        max_memory = mycc.max_memory - lib.current_memory()[0]
+        max_memory = min(24000, mycc.max_memory - lib.current_memory()[0])
         blksize = min(nvir_seg//4+1, max(16, int(max_memory*.3e6/8/(nvir*nocc*nmo))))
         self.eri_tmp = lib.H5TmpFile()
         vvop = self.eri_tmp.create_dataset('vvop', (nvir_seg,nvir,nocc,nmo), 'f8')

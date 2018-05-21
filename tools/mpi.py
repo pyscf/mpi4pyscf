@@ -188,7 +188,7 @@ def bcast(buf, root=0):
         buf = numpy.empty(shape, dtype=dtype)
 
     buf_seg = numpy.ndarray(buf.size, dtype=buf.dtype, buffer=buf)
-    for p0, p1 in lib.prange(0, buf.size, INT_MAX):
+    for p0, p1 in lib.prange(0, buf.size, INT_MAX//4+1):
         comm.Bcast(buf_seg[p0:p1], root)
     return buf
 
@@ -200,7 +200,7 @@ def reduce(sendbuf, op=MPI.SUM, root=0):
     recvbuf = numpy.zeros_like(sendbuf)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
-    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX):
+    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX//4+1):
         comm.Reduce(send_seg[p0:p1], recv_seg[p0:p1], op, root)
 
     if rank == root:
@@ -216,7 +216,7 @@ def allreduce(sendbuf, op=MPI.SUM):
     recvbuf = numpy.zeros_like(sendbuf)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
-    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX):
+    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX//4+1):
         comm.Allreduce(send_seg[p0:p1], recv_seg[p0:p1], op)
     return recvbuf
 
@@ -236,7 +236,7 @@ def scatter(sendbuf, root=0):
     recvbuf = numpy.empty(numpy.prod(shape), dtype=mpi_dtype)
 
     #DONOT use lib.prange. lib.prange may terminate early in some processes
-    for p0, p1 in prange(0, numpy.max(counts), INT_MAX):
+    for p0, p1 in prange(0, numpy.max(counts), INT_MAX//4+1):
         counts_seg = _segment_counts(counts, p0, p1)
         comm.Scatterv([sendbuf, counts_seg, displs+p0, mpi_dtype],
                       [recvbuf[p0:p1], mpi_dtype], root)
@@ -271,7 +271,7 @@ def gather(sendbuf, root=0, split_recvbuf=False):
         #             [recvbuf.ravel(), counts, displs, mpi_dtype], root)
 
         sendbuf = sendbuf.ravel()
-        for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX):
+        for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX//4+1):
             counts_seg = _segment_counts(counts, p0, p1)
             comm.Gatherv([sendbuf[p0:p1], mpi_dtype],
                          [recvbuf, counts_seg, displs+p0, mpi_dtype], root)
@@ -284,9 +284,10 @@ def gather(sendbuf, root=0, split_recvbuf=False):
             except ValueError:
                 return recvbuf
     else:
-        sendbuf = sendbuf.ravel()
-        for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX):
-            comm.Gatherv([sendbuf[p0:p1], mpi_dtype], None, root)
+        send_seg = sendbuf.ravel()
+        for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX//4+1):
+            comm.Gatherv([send_seg[p0:p1], mpi_dtype], None, root)
+        return sendbuf
 
 
 def allgather(sendbuf, split_recvbuf=False):
@@ -305,7 +306,7 @@ def allgather(sendbuf, split_recvbuf=False):
     #                [recvbuf.ravel(), counts, displs, mpi_dtype])
 
     sendbuf = sendbuf.ravel()
-    for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX):
+    for p0, p1 in lib.prange(0, numpy.max(counts), INT_MAX//4+1):
         counts_seg = _segment_counts(counts, p0, p1)
         comm.Allgatherv([sendbuf[p0:p1], mpi_dtype],
                         [recvbuf, counts_seg, displs+p0, mpi_dtype])
@@ -345,9 +346,10 @@ def alltoall(sendbuf, split_recvbuf=False):
     #comm.Alltoallv([sendbuf.ravel(), scounts, sdispls, mpi_dtype],
     #               [recvbuf.ravel(), rcounts, rdispls, mpi_dtype])
 
+    max_counts = max(numpy.max(scounts), numpy.max(rcounts))
     sendbuf = sendbuf.ravel()
     #DONOT use lib.prange. lib.prange may terminate early in some processes
-    for p0, p1 in prange(0, numpy.max(scounts), INT_MAX):
+    for p0, p1 in prange(0, max_counts, INT_MAX//4+1):
         scounts_seg = _segment_counts(scounts, p0, p1)
         rcounts_seg = _segment_counts(rcounts, p0, p1)
         comm.Alltoallv([sendbuf, scounts_seg, sdispls+p0, mpi_dtype],
@@ -363,7 +365,7 @@ def send(sendbuf, dest=0, tag=0):
     sendbuf = numpy.asarray(sendbuf, order='C')
     comm.send((sendbuf.shape, sendbuf.dtype), dest=dest, tag=tag)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
-    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX):
+    for p0, p1 in lib.prange(0, sendbuf.size, INT_MAX//4+1):
         comm.Send(send_seg[p0:p1], dest=dest, tag=tag)
     return sendbuf
 
@@ -371,7 +373,7 @@ def recv(source=0, tag=0):
     shape, dtype = comm.recv(source=source, tag=tag)
     recvbuf = numpy.empty(shape, dtype=dtype)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
-    for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX):
+    for p0, p1 in lib.prange(0, recvbuf.size, INT_MAX//4+1):
         comm.Recv(recv_seg[p0:p1], source=source, tag=tag)
     return recvbuf
 

@@ -22,6 +22,16 @@ def alltoall(n, m):
     res = mpi.alltoall(arrs, split_recvbuf=True)
     print([x.shape for x in res])
 
+    if mpi.rank < 3:
+        d1 = 3
+    else:
+        d1 = 1
+    arrs = [numpy.zeros(s) for s in [(d1)]*mpi.pool.size]
+    res = mpi.alltoall(arrs, split_recvbuf=True)
+    print([x.shape for x in res])
+
+mpi.pool.apply(alltoall, (None,), (None,))
+
 def allgather(n, m):
     import numpy
     from mpi4pyscf.tools import mpi
