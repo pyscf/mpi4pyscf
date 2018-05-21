@@ -109,8 +109,9 @@ class GlobalDataHandler(object):
         nmo = nocc + nvir
         nvir_seg = (nvir + mpi.pool.size - 1) // mpi.pool.size
         max_memory = mycc.max_memory - lib.current_memory()[0]
-        blksize = int(max(BLKMIN, (max_memory*.9e6/8/(6*nvir*nocc))**.5 - nocc/4))
-        blksize = min(comm.allgather(min(nvir//6+2, nvir_seg//2+1, blksize)))
+        max_memory = max(0, max_memory - nocc**3*13*lib.num_threads()*8/1e6)
+        blksize = max(BLKMIN, (max_memory*.5e6/8/(6*nmo*nocc))**.5 - nocc/4)
+        blksize = int(min(comm.allgather(min(nvir/6+2, nvir_seg/2+1, blksize))))
         logger.debug1(mycc, 'GlobalDataHandler blksize %s', blksize)
 
         self.vranges = []
