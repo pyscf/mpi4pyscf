@@ -21,7 +21,7 @@ if 'pool' not in _registry:
 comm = pool.comm
 rank = pool.rank
 INT_MAX = 2147483647
-BLKSIZE = INT_MAX // 16 + 1
+BLKSIZE = INT_MAX // 32 + 1
 
 def static_partition(tasks):
     size = len(tasks)
