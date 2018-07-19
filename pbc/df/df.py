@@ -131,10 +131,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
         j2c_k = numpy.zeros_like(j2c[k])
         for p0, p1 in mydf.prange(0, ngrids, blksize):
-            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
+            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt)
             if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
                 G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv[p0:p1])
                 aoaux[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, plain_ints)
+            aoaux = aoaux.T
             LkR = aoaux.real * coulG[p0:p1]
             LkI = aoaux.imag * coulG[p0:p1]
             aoaux = None
@@ -236,7 +237,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         naux0 = 0
         for istep, auxrange in enumerate(auxranges):
-            log.alldebug2("aux_e2 job_id %d step %d", job_id, istep)
+            log.alldebug2("aux_e1 job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             sub_slice = (ish0, ish1, 0, cell.nbas, sh0, sh1)
             mat = numpy.ndarray((nkptij,dij,nrow), dtype=dtype, buffer=buf)

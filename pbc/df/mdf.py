@@ -173,7 +173,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
         naux0 = 0
         for istep, auxrange in enumerate(auxranges):
-            log.alldebug2("aux_e2 job_id %d step %d", job_id, istep)
+            log.alldebug2("aux_e1 job_id %d step %d", job_id, istep)
             sh0, sh1, nrow = auxrange
             sub_slice = (ish0, ish1, 0, cell.nbas, sh0, sh1)
             if j_only:

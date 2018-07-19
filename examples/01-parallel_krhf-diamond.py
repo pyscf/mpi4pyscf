@@ -25,7 +25,7 @@ cell.a = '''
 cell.unit = 'B'
 cell.basis = 'gth-szv'
 cell.pseudo = 'gth-pade'
-cell.gs = [7]*3
+cell.mesh = [15]*3
 cell.verbose = 5
 cell.build()
 
