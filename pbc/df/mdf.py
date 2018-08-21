@@ -19,7 +19,7 @@ from pyscf import lib
 from pyscf.pbc.df import ft_ao
 from pyscf.pbc.df import mdf
 from pyscf.pbc.df.incore import wrap_int3c
-from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
+from pyscf.pbc.df.df import fuse_auxcell, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
@@ -383,6 +383,19 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
 @mpi.register_class
 class MDF(mdf.MDF, df.DF):
+
+    def pack(self):
+        return {'verbose'   : self.verbose,
+                'max_memory': self.max_memory,
+                'kpts'      : self.kpts,
+                'kpts_band' : self.kpts_band,
+                'mesh'      : self.mesh,
+                'blockdim'  : self.blockdim,
+                '_auxbasis' : self._auxbasis,
+                '_eta'      : self._eta,
+                '_exp_to_discard' : self._exp_to_discard,
+                'linear_dep_threshold': self.linear_dep_threshold,
+                '_cderi'     : self._cderi}
 
     _make_j3c = _make_j3c
 

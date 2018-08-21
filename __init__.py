@@ -1,7 +1,8 @@
 # Must import every submodule before suspending the slave processes
 import pyscf
 from distutils.version import LooseVersion
-assert(LooseVersion(pyscf.__version__) >= LooseVersion('1.5'))
+assert(LooseVersion(pyscf.__version__) >= LooseVersion('1.5.2'))
+assert(LooseVersion(pyscf.__version__) < LooseVersion('1.6'))
 del(LooseVersion)
 
 from . import lib

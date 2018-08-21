@@ -486,6 +486,7 @@ class DF(df.DF, aft.AFTDF):
                 'kpts_band' : self.kpts_band,
                 'mesh'      : self.mesh,
                 'eta'       : self.eta,
+                'exp_to_discard' : self.exp_to_discard,
                 'blockdim'  : self.blockdim,
                 '_auxbasis' : self._auxbasis,
                 'linear_dep_threshold': self.linear_dep_threshold,
