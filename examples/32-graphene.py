@@ -6,7 +6,6 @@ import numpy
 from mpi4pyscf.pbc import df as pdf
 from pyscf.pbc import scf as pbchf
 from pyscf.pbc import gto as pbcgto
-from pyscf.pbc import tools
 
 nk = 2
 kpts = [nk,nk,1]

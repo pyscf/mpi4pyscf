@@ -163,10 +163,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             v1 /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
             fswap['j2c/%d'%k] = v1
             if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-                v2 = v[:,w<-mydf.linear_dep_threshold].conj().T
-                v2 /= numpy.sqrt(-w[w<-mydf.linear_dep_threshold]).reshape(-1,1)
-                fswap['j2c-/%d'%k] = v2
-            w = v = v1 = v2 = None
+                idx = numpy.where(w < -mydf.linear_dep_threshold)[0]
+                if len(idx) > 0:
+                    fswap['j2c-/%d'%k] = (v[:,idx]/numpy.sqrt(-w[idx])).conj().T
+            w = v = v1 = None
             j2ctags.append('eig')
     j2c = coulG = None
 
@@ -259,7 +259,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j2c = numpy.asarray(fswap['j2c/%d'%uniq_kptji_id])
         j2ctag = j2ctags[uniq_kptji_id]
         naux0 = j2c.shape[0]
-        if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
+        if ('j2c-/%d' % uniq_kptji_id) in fswap:
             j2c_negative = numpy.asarray(fswap['j2c-/%d'%uniq_kptji_id])
         else:
             j2c_negative = None
@@ -409,17 +409,15 @@ def _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, 
     segs_loc_s1 = get_segs_loc(False)
     segs_loc_s2 = get_segs_loc(True)
 
+    job_ids = numpy.where(rank == j3c_workers)[0]
     def load(k, p0, p1):
         naux1 = nauxs[uniq_inverse[k]]
         slices = [(min(i*segsize+p0,naux1), min(i*segsize+p1,naux1))
                   for i in range(mpi.pool.size)]
         segs = []
         for p0, p1 in slices:
-            val = []
-            for job_id, worker in enumerate(j3c_workers):
-                if rank == worker:
-                    key = 'j3c-chunks/%d/%d' % (job_id, k)
-                    val.append(fswap[key][p0:p1].ravel())
+            val = [fswap['j3c-chunks/%d/%d' % (job, k)][p0:p1].ravel()
+                   for job in job_ids]
             if val:
                 segs.append(numpy.hstack(val))
             else:
@@ -461,15 +459,17 @@ def _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, 
                 t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
                                       (k, p0, p1, segsize), *t2)
 
-    if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-        for k, kptji in enumerate(kptij_lst):
-            val = []
-            for job_id, worker in enumerate(j3c_workers):
-                if rank == worker:
-                    key = 'j3c-/%d/%d' % (job_id, k)
-                    val.append(numpy.asarray(fswap[key]).ravel())
+    if 'j2c-' in fswap:
+        j2c_kpts_lists = []
+        for k, kpt in enumerate(uniq_kpts):
+            if ('j2c-/%d' % k) in fswap:
+                adapted_ji_idx = numpy.where(uniq_inverse == k)[0]
+                j2c_kpts_lists.append(adapted_ji_idx)
 
-            val = mpi.gather(val)
+        for k in numpy.hstack(j2c_kpts_lists):
+            val = [numpy.asarray(fswap['j3c-/%d/%d' % (job, k)]).ravel()
+                   for job in job_ids]
+            val = mpi.gather(numpy.hstack(val))
             if rank == 0:
                 naux1 = fswap['j3c-/0/%d'%k].shape[0]
                 if aosym_s2[k]:
@@ -493,6 +493,7 @@ class DF(df.DF, aft.AFTDF):
     _make_j3c = _make_j3c
 
     get_nuc = aft.get_nuc
+    get_pp = aft.get_pp
     _int_nuc_vloc = aft._int_nuc_vloc
 
     def dump_flags(self):

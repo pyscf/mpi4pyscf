@@ -100,9 +100,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             v1 /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
             fswap['j2c/%d'%k] = v1
             if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-                v2 = v[:,w<-mydf.linear_dep_threshold].conj().T
-                v2 /= numpy.sqrt(-w[w<-mydf.linear_dep_threshold]).reshape(-1,1)
-                fswap['j2c-/%d'%k] = v2
+                idx = numpy.where(w < -mydf.linear_dep_threshold)[0]
+                if len(idx) > 0:
+                    fswap['j2c-/%d'%k] = (v[:,idx]/numpy.sqrt(-w[idx])).conj().T
             w = v = v1 = v2 = None
             j2ctags.append('eig')
         aoaux = kLR = kLI = j2cR = j2cI = coulG = None
@@ -204,7 +204,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j2c = numpy.asarray(fswap['j2c/%d'%uniq_kptji_id])
         j2ctag = j2ctags[uniq_kptji_id]
         naux0 = j2c.shape[0]
-        if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
+        if ('j2c-/%d' % uniq_kptji_id) in fswap:
             j2c_negative = numpy.asarray(fswap['j2c-/%d'%uniq_kptji_id])
         else:
             j2c_negative = None
@@ -301,6 +301,7 @@ class MDF(mdf.MDF, df.DF):
     _make_j3c = _make_j3c
 
     get_nuc = aft.get_nuc
+    get_pp = aft.get_pp
     _int_nuc_vloc = aft._int_nuc_vloc
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,

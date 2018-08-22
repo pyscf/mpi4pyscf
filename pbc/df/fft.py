@@ -80,11 +80,10 @@ def get_pp(mydf, kpts=None):
     else:
         dtype = numpy.complex128
 
-    low_dim_ft_type = mydf.low_dim_ft_type
     mesh = mydf.mesh
     SI = cell.get_SI()
     Gv = cell.get_Gv(mesh)
-    vpplocG = pseudo.get_vlocG(cell, Gv, low_dim_ft_type)
+    vpplocG = pseudo.get_vlocG(cell, Gv)
     vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
     ngrids = len(vpplocG)
 

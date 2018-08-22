@@ -79,7 +79,6 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     mesh = mydf.mesh
-    low_dim_ft_type = mydf.low_dim_ft_type
     coords = cell.gen_uniform_grids(mesh)
     ngrids = coords.shape[0]
 
@@ -139,11 +138,9 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
         # that arise from the FFT.
         mydf.exxdiv = exxdiv
         if exxdiv == 'ewald' or exxdiv is None:
-            coulG = tools.get_coulG(cell, kpt2-kpt1, False, mydf, mesh,
-                                    low_dim_ft_type=low_dim_ft_type)
+            coulG = tools.get_coulG(cell, kpt2-kpt1, False, mydf, mesh)
         else:
-            coulG = tools.get_coulG(cell, kpt2-kpt1, True, mydf, mesh,
-                                    low_dim_ft_type=low_dim_ft_type)
+            coulG = tools.get_coulG(cell, kpt2-kpt1, True, mydf, mesh)
         if is_zero(kpt1-kpt2):
             expmikr = numpy.array(1.)
         else:
