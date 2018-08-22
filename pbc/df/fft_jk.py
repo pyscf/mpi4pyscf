@@ -14,7 +14,7 @@ from pyscf import lib
 from pyscf.pbc import tools
 from pyscf.pbc.df.df_jk import is_zero, gamma_point
 from pyscf.pbc.df.df_jk import _format_dms, _format_kpts_band, _format_jks
-from pyscf.pbc.df.df_jk import _ewald_exxdiv_3d
+from pyscf.pbc.df.df_jk import _ewald_exxdiv_for_G0
 from pyscf.pbc.dft import gen_grid
 from pyscf.pbc.dft import numint
 
@@ -201,7 +201,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
 
     if rank == 0:
         if exxdiv == 'ewald':
-            _ewald_exxdiv_3d(cell, kpts, dms, vk_kpts, kpts_band=kpts_band)
+            _ewald_exxdiv_for_G0(cell, kpts, dms, vk_kpts, kpts_band=kpts_band)
         return _format_jks(vk_kpts, dm_kpts, input_band, kpts)
 
 

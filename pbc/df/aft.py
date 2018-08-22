@@ -32,10 +32,13 @@ def get_nuc(mydf, kpts=None):
     mydf = _sync_mydf(mydf)
 # Call the serial code because pw_loop and ft_loop methods are overloaded.
     vne = aft.get_nuc(mydf, kpts)
-    vne = mpi.reduce(vne)
-    return vne
+    return mpi.reduce(vne)
 
-get_pp_loc_part1 = get_nuc
+@mpi.parallel_call
+def get_pp_loc_part1(mydf, kpts=None):
+    mydf = _sync_mydf(mydf)
+    vne = aft.get_pp_loc_part1(mydf, kpts)
+    return mpi.reduce(vne)
 
 @mpi.parallel_call
 def get_pp(mydf, kpts=None):
@@ -91,22 +94,14 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e_sph', aosym='s2', comp=1):
     for k in range(nkpts):
         mat[k] = mpi.allgather(buf[k])
 
-    if rank == 0 and cell.dimension != 0 and intor == 'int3c2e_sph':
+    if (rank == 0 and
+        cell.dimension == 3 and intor in ('int3c2e', 'int3c2e_sph',
+                                          'int3c2e_cart')):
         assert(comp == 1)
         charges = cell.atom_charges()
 
-        if cell.dimension == 1 or cell.dimension == 2:
-            Gv, Gvbase, kws = cell.get_Gv_weights(mydf.mesh)
-            G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv)
-            ZSI = numpy.einsum("i,ix->x", charges, cell.get_SI(Gv[G0idx]))
-            ZSI -= numpy.einsum('i,xi->x', charges, ft_ao.ft_ao(nuccell, Gv[G0idx]))
-            coulG = 4*numpy.pi / numpy.linalg.norm(Gv[G0idx], axis=1)**2
-            nucbar = numpy.einsum('i,i,i,i', ZSI.conj(), coulG, kws[G0idx], SI_on_z)
-            if abs(kpts).sum() < 1e-9:
-                nucbar = nucbar.real
-        else: # cell.dimension == 3
-            nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(charges)])
-            nucbar *= numpy.pi/cell.vol
+        nucbar = sum([z/nuccell.bas_exp(i)[0] for i,z in enumerate(charges)])
+        nucbar *= numpy.pi/cell.vol
 
         ovlp = cell.pbc_intor('int1e_ovlp_sph', 1, lib.HERMITIAN, kpts)
         for k in range(nkpts):
