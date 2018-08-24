@@ -9,6 +9,7 @@ from . import lib
 from . import pbc
 from . import cc
 from . import mp
+from . import scf
 
 
 # NOTE: suspend all slave processes at last
