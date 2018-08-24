@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+import time
+import copy
 import numpy
 from pyscf import lib
 from pyscf import scf
@@ -44,42 +46,34 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
     bas_groups = _partition_bas(mol)
     jobs = gen_jobs(len(bas_groups), hermi)
     njobs = len(jobs)
+    logger.debug1(mf, 'njobs %d', njobs)
 
-    vhfopt = mf.opt
-    if vhfopt is None:
-        intor = mol._add_suffix('int2e')
-        vhfopt = _vhf.VHFOpt(mol, 'int2e', 'CVHFnrs8_prescreen',
-                             'CVHFsetnr_direct_scf')
+    if mf.opt is None:
+        vhfopt = mf.init_direct_scf(mol)
     else:
-        vhfopt = copy.copy(vhfopt)
-        vhfopt._dmcondname = None # to skip set_dm in _vhf.direct_bindm
+        vhfopt = mf.opt
+    vhfopt._dmcondname = None # to skip set_dm in _vhf.direct_bindm
 
     # _vhf.direct_bindm does not support prescreen in pyscf-1.6
     vhfopt._this.contents.fprescreen = _vhf._fpointer('CVHFnoscreen')
 
     ngroups = len(bas_groups)
     nbas = mol.nbas
-    q_cond0 = lib.frompointer(vhfopt._this.contents.q_cond, nbas**2)
-    q_cond0 = q_cond0.reshape(nbas,nbas)
-    q_cond = numpy.empty((ngroups,ngroups))
-    dm_cond = numpy.empty((ngroups,ngroups))
-    for ip, (ish0, ish1) in enumerate(bas_groups):
-        for jp, (jsh0, jsh1) in enumerate(bas_groups):
-            i0 = ao_loc[ish0]
-            i1 = ao_loc[ish1]
-            j0 = ao_loc[jsh0]
-            j1 = ao_loc[jsh1]
-            q_cond[ip,jp] = abs(q_cond0[ish0:ish1,jsh0:jsh1]).max()
-            dm_cond[ip,jp] = abs(dm[i0:i1,j0:j1]).max()
-
-    prescreen = gen_prescreen(q_cond, dm_cond, mf.direct_scf_tol)
+    q_cond = lib.frompointer(vhfopt._this.contents.q_cond, nbas**2)
+    q_cond = q_cond.reshape(nbas,nbas)
+    dm_cond = mol.condense_to_shell(abs(dm))
+    dm_cond = (dm_cond + dm_cond.T) * .5
+    prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
 
     IJKL = 'ijkl'
+    count = skip = 0
     for job_id in mpi.work_stealing_partition(range(njobs)):
         job = jobs[job_id]
         group_ids = job[0]
         if not prescreen(*group_ids):
+            skip += 1
             continue
+        count += 1
 
         shls_slice = lib.flatten([bas_groups[i] for i in group_ids])
         loc = ao_loc[shls_slice].reshape(4,2)
@@ -99,6 +93,7 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
             q0, q1 = loc[script[3]]
             vk[p0:p1,q0:q1] += kparts[i]
 
+    logger.alldebug1(mf, 'job count %d, skip %d', count, skip)
     vk = mpi.reduce(vk)
     if rank == 0 and hermi:
         vk = lib.hermi_triu(vk, hermi, inplace=True)
@@ -106,32 +101,63 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
 
 def _partition_bas(mol):
     aoslice = mol.aoslice_by_atom()
-    nbas_per_atom = aoslice[1:,1] - aoslice[:-1,0]
+    nbas_per_atom = aoslice[:,1] - aoslice[:,0]
     nthreads = lib.num_threads()
     nbas = mol.nbas
-    # For OMP load balance, each thread at least evaluates 30 pairs of shells.
-    batch_size = min(int((nthreads * 30)**.5),
-                     nbas_per_atom.max() * 2)
+    # For OMP load balance, each thread at least evaluates 20 pairs of shells.
+    batch_size = int(min((nthreads * 20)**.5,
+                         nbas_per_atom.max()*1.5))
     bas_groups = list(lib.prange(0, mol.nbas, batch_size))
+    logger.debug1(mol, 'batch_size %d, ngroups = %d',
+                  batch_size, len(bas_groups))
     return bas_groups
 
-def _generate_vj_s8_prescreen(q_cond, dm_cond, direct_scf_cutoff):
+def _generate_vj_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
+    bas_groups = numpy.asarray(bas_groups)
+    direct_scf_tol = mf.direct_scf_tol
+    def test(q1, dm, q2):
+        v = numpy.einsum('ij,ji->', q1, dm)
+        return numpy.any(q2*v > .25*direct_scf_tol)
     def vj_screen(i, j, k, l):
-        qijkl = q_cond[i,j] * q_cond[k,l]
-        dmin = direct_scf_cutoff / qijkl
-        return (qijkl > direct_scf_cutoff and
-                (4*dm_cond[j,i] > dmin) or (4*dm_cond[l,k] > dmin))
+        i0, i1, j0, j1, k0, k1, l0, l1 = bas_groups[[i,j,k,l]].ravel()
+        #:qijkl = numpy.einsum('ij,kl->ijkl', q_cond[i0:i1,j0:j1], q_cond[k0:k1,l0:l1])
+        #:return (numpy.any(numpy.einsum('ijkl,ji->kl', qijkl, dm_cond[j0:j1,i0:i1])
+        #:                  > .25*direct_scf_tol) or
+        #:        numpy.any(numpy.einsum('ijkl,lk->ij', qijkl, dm_cond[k0:k1,l0:l1])
+        #:                  > .25*direct_scf_tol))
+        if test(q_cond[i0:i1,j0:j1], dm_cond[j0:j1,i0:i1], q_cond[k0:k1,l0:l1]):
+            return True
+        elif test(q_cond[k0:k1,l0:l1], dm_cond[l0:l1,k0:k1], q_cond[i0:i1,j0:j1]):
+            return True
+        else:
+            return False
     return vj_screen
 
-def _generate_vk_s8_prescreen(q_cond, dm_cond, direct_scf_cutoff):
+def _generate_vk_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
+    bas_groups = numpy.asarray(bas_groups)
+    direct_scf_tol = mf.direct_scf_tol
+
+    def test(q1, dm, q2):
+        v = q1.dot(dm).dot(q2)
+        return numpy.any(v > direct_scf_tol)
+
     def vk_screen(i, j, k, l):
-        qijkl = q_cond[i,j] * q_cond[k,l]
-        dmin = direct_scf_cutoff / qijkl
-        return (qijkl > direct_scf_cutoff and
-                (dm_cond[j,k] > dmin) or
-                (dm_cond[j,l] > dmin) or
-                (dm_cond[i,k] > dmin) or
-                (dm_cond[i,l] > dmin))
+        i0, i1, j0, j1, k0, k1, l0, l1 = bas_groups[[i,j,k,l]].ravel()
+        #:qijkl = numpy.einsum('ij,kl->ijkl', q_cond[i0:i1,j0:j1], q_cond[k0:k1,l0:l1])
+        #:return (numpy.any(numpy.einsum('ijkl,jk->il', qijkl, dm_cond[j0:j1,i0:i1]) > direct_scf_tol) or
+        #:        numpy.any(numpy.einsum('ijkl,jl->ik', qijkl, dm_cond[k0:k1,l0:l1]) > direct_scf_tol) or
+        #:        numpy.any(numpy.einsum('ijkl,ik->jl', qijkl, dm_cond[k0:k1,l0:l1]) > direct_scf_tol) or
+        #:        numpy.any(numpy.einsum('ijkl,il->jk', qijkl, dm_cond[k0:k1,l0:l1]) > direct_scf_tol))
+        if test(q_cond[i0:i1,j0:j1], dm_cond[j0:j1,k0:k1], q_cond[k0:k1,l0:l1]):
+            return True
+        elif test(q_cond[i0:i1,j0:j1], dm_cond[j0:j1,l0:l1], q_cond[k0:k1,l0:l1].T):
+            return True
+        elif test(q_cond[i0:i1,j0:j1].T, dm_cond[i0:i1,k0:k1], q_cond[k0:k1,l0:l1]):
+            return True
+        elif test(q_cond[i0:i1,j0:j1].T, dm_cond[i0:i1,l0:l1], q_cond[k0:k1,l0:l1].T):
+            return True
+        else:
+            return False
     return vk_screen
 
 def _vj_jobs_s8(ngroups, hermi=1):
