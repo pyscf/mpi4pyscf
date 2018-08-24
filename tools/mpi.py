@@ -57,7 +57,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
     if rank == 0:
         rest_tasks = list(tasks[loadmin*pool.size:])
 
-    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin])
+    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin][::-1])
     def distribute_task():
         while True:
             load = comm.gather(len(tasks))
@@ -66,7 +66,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
                     jobs = [None] * pool.size
                     for i in range(pool.size):
                         if rest_tasks and load[i] < loadmin:
-                            jobs[i] = rest_tasks.pop(0)
+                            jobs[i] = rest_tasks.pop()
                 else:
                     jobs = ['OUT_OF_TASK'] * pool.size
                 task = comm.scatter(jobs)
@@ -85,7 +85,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
 
     while True:
         if tasks:
-            task = tasks.pop(0)
+            task = tasks.pop()
             if isinstance(task, str) and task == 'OUT_OF_TASK':
                 break
             yield task
@@ -94,7 +94,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
     tasks_handler.join()
 
 def work_stealing_partition(tasks, interval=.02):
-    tasks = list(static_partition(tasks))
+    tasks = list(static_partition(tasks)[::-1])
     out_of_task = [False]
     def task_daemon():
         while True:
@@ -131,7 +131,7 @@ def work_stealing_partition(tasks, interval=.02):
         tasks_handler.start()
 
     while tasks:
-        task = tasks.pop(0)
+        task = tasks.pop()
         yield task
 
     if pool.size > 1:

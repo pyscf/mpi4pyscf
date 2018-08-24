@@ -2,6 +2,7 @@
 
 import time
 import copy
+import ctypes
 import numpy
 from pyscf import lib
 from pyscf import scf
@@ -65,11 +66,48 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
     dm_cond = (dm_cond + dm_cond.T) * .5
     prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
 
-    IJKL = 'ijkl'
+    if 1:
+        # To avoid overhead of jk.get_jk, some initialization for
+        # _vhf.direct_bindm.
+        c_atm = mol._atm.ctypes.data_as(ctypes.c_void_p)
+        c_bas = mol._bas.ctypes.data_as(ctypes.c_void_p)
+        c_env = mol._env.ctypes.data_as(ctypes.c_void_p)
+        c_natm = ctypes.c_int(mol.natm)
+        c_nbas = ctypes.c_int(mol.nbas)
+        c_ao_loc = ao_loc.ctypes.data_as(ctypes.c_void_p)
+        c_comp1 = ctypes.c_int(1)
+
+        intor = mol._add_suffix('int2e')
+        cvhfopt = vhfopt._this
+        cintopt = vhfopt._cintopt
+        cintor = getattr(_vhf.libcvhf, intor)
+        fdrv = getattr(_vhf.libcvhf, 'CVHFnr_direct_drv')
+        fdot = _vhf._fpointer('CVHFdot_nrs1')
+        fjk = (ctypes.c_void_p*8)()
+        dmsptr = (ctypes.c_void_p*8)()
+
+        dm_cache = []
+        c_dm_cache = []
+        for ish0, ish1 in bas_groups:
+            for jsh0, jsh1 in bas_groups:
+                sub_dm = dm[ao_loc[ish0]:ao_loc[ish1],ao_loc[jsh0]:ao_loc[jsh1]]
+                dm_cache.append(numpy.asarray(sub_dm, order='C'))
+                c_dm_cache.append(dm_cache[-1].ctypes.data_as(ctypes.c_void_p))
+        max_size = max(x.size for x in dm_cache)
+        jk_buffer = numpy.empty((8,max_size))
+        vjkptr = (ctypes.c_void_p*8)(*[x.ctypes.data_as(ctypes.c_void_p)
+                                       for x in jk_buffer])
+        nr_dot_lookup = {}
+        for key in ((1,0,2,3), (0,1,2,3), (3,2,0,1), (2,3,0,1),
+                    (1,0,2,3), (2,3,1,0), (3,2,1,0),
+                    (1,2,0,3), (1,3,0,2), (0,2,1,3), (0,3,1,2),
+                    (3,0,2,1), (3,1,2,0), (2,0,3,1), (2,1,3,0)):
+            f1 = 'CVHFnrs1_%s%s_s1%s%s' % tuple(['ijkl'[x] for x in key])
+            nr_dot_lookup[key] = _vhf._fpointer(f1)
+
     count = skip = 0
     for job_id in mpi.work_stealing_partition(range(njobs)):
-        job = jobs[job_id]
-        group_ids = job[0]
+        group_ids, recipe = jobs[job_id]
         if not prescreen(*group_ids):
             skip += 1
             continue
@@ -77,21 +115,36 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
 
         shls_slice = lib.flatten([bas_groups[i] for i in group_ids])
         loc = ao_loc[shls_slice].reshape(4,2)
-        dms = []
-        scripts = []
-        for script in job[1:]:
-            p0, p1 = loc[script[0]]
-            q0, q1 = loc[script[1]]
-            dms.append(dm[p0:p1,q0:q1])
-            scripts.append('ijkl,%s%s->%s%s' % tuple([IJKL[x] for x in script]))
 
-        kparts = jk.get_jk(mol, dms, scripts, shls_slice=shls_slice,
-                           vhfopt=vhfopt)
+        if 0: # Avoid the overhead in jk.get_jk
+            dms = []
+            scripts = []
+            for rec in recipe:
+                p0, p1 = loc[rec[0]]
+                q0, q1 = loc[rec[1]]
+                dms.append(numpy.asarray(dm[p0:p1,q0:q1], order='C'))
+                scripts.append('ijkl,%s%s->%s%s' % tuple(['ijkl'[x] for x in rec]))
+            kparts = jk.get_jk(mol, dms, scripts, shls_slice=shls_slice,
+                               vhfopt=vhfopt)
+            for i, rec in enumerate(recipe):
+                p0, p1 = loc[rec[2]]
+                q0, q1 = loc[rec[3]]
+                vk[p0:p1,q0:q1] += kparts[i]
 
-        for i, script in enumerate(job[1:]):
-            p0, p1 = loc[script[2]]
-            q0, q1 = loc[script[3]]
-            vk[p0:p1,q0:q1] += kparts[i]
+        else:
+            for i, rec in enumerate(recipe):
+                fjk[i] = nr_dot_lookup[rec]
+                dmsptr[i] = c_dm_cache[group_ids[rec[0]]*ngroups+group_ids[rec[1]]]
+            fdrv(cintor, fdot, fjk, dmsptr, vjkptr,
+                 ctypes.c_int(len(recipe)), c_comp1,
+                 (ctypes.c_int*8)(*shls_slice), c_ao_loc, cintopt, cvhfopt,
+                 c_atm, c_natm, c_bas, c_nbas, c_env)
+
+            for i, rec in enumerate(recipe):
+                p0, p1 = loc[rec[2]]
+                q0, q1 = loc[rec[3]]
+                kpart = numpy.ndarray((p1-p0,q1-q0), buffer=jk_buffer[i])
+                vk[p0:p1,q0:q1] += kpart
 
     logger.alldebug1(mf, 'job count %d, skip %d', count, skip)
     vk = mpi.reduce(vk)
@@ -104,9 +157,9 @@ def _partition_bas(mol):
     nbas_per_atom = aoslice[:,1] - aoslice[:,0]
     nthreads = lib.num_threads()
     nbas = mol.nbas
-    # For OMP load balance, each thread at least evaluates 20 pairs of shells.
-    batch_size = int(min((nthreads * 20)**.5,
-                         nbas_per_atom.max()*1.5))
+    # For OMP load balance, each thread at least evaluates 50 pairs of shells.
+    batch_size = int(min((nthreads * 50)**.5,
+                         nbas_per_atom.max()*2))
     bas_groups = list(lib.prange(0, mol.nbas, batch_size))
     logger.debug1(mol, 'batch_size %d, ngroups = %d',
                   batch_size, len(bas_groups))
@@ -162,102 +215,122 @@ def _generate_vk_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
 
 def _vj_jobs_s8(ngroups, hermi=1):
     jobs = []
+    if hermi:
+        recipe = ((1,0,2,3), (3,2,0,1))
+    else:
+        recipe = ((1,0,2,3), (0,1,2,3), (3,2,0,1), (2,3,0,1))
     for ip in range(ngroups):
         for jp in range(ip):
             for kp in range(ip):
                 for lp in range(kp):
-                    jobs.append(((ip, jp, kp, lp),
-                                 #(1,0,2,3), (0,1,2,3), (3,2,0,1), (2,3,0,1)))
-                                 (1,0,2,3), (3,2,0,1)))
+                    jobs.append(((ip, jp, kp, lp), recipe))
 
-                # ip > jp, ip > kp, kp == lp
+    # ip > jp, ip > kp, kp == lp
+    if hermi:
+        recipe = ((1,0,2,3), (2,3,0,1))
+    else:
+        recipe = ((1,0,2,3), (0,1,2,3), (2,3,0,1))
+    for ip in range(ngroups):
+        for jp in range(ip):
+            for kp in range(ip):
                 lp = kp
-                jobs.append(((ip, jp, kp, lp),
-                             #(1,0,2,3), (0,1,2,3),            (2,3,0,1)))
-                             (1,0,2,3), (2,3,0,1)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-            # ip == kp and ip > jp and kp > lp
+    # ip == kp and ip > jp and kp > lp
+    if hermi:
+        recipe = ((1,0,2,3),)
+    else:
+        recipe = ((1,0,2,3), (0,1,2,3))
+    for ip in range(ngroups):
+        for jp in range(ip):
             kp = ip
             for lp in range(kp):
-                jobs.append(((ip, jp, kp, lp),
-                             #(1,0,2,3), (0,1,2,3)))
-                             (1,0,2,3)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp and ip >= kp
+    # ip == jp and ip >= kp
+    if hermi:
+        recipe = ((1,0,2,3), (3,2,1,0))
+    else:
+        recipe = ((1,0,2,3), (2,3,1,0), (3,2,1,0))
+    for ip in range(ngroups):
         jp = ip
         for kp in range(ip+1):
             for lp in range(kp):
-                jobs.append(((ip, jp, kp, lp),
-                             #(1,0,2,3),            (2,3,1,0), (3,2,1,0)))
-                             (1,0,2,3), (3,2,1,0)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp and ip > kp and kp == lp
+    # ip == jp and ip > kp and kp == lp
+    recipe = ((1,0,2,3), (3,2,0,1))
+    for ip in range(ngroups):
         jp = ip
         for kp in range(ip):
             lp = kp
-            jobs.append(((ip, jp, kp, lp),
-                         (1,0,2,3), (3,2,0,1)))
+            jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp == kp == lp
-        jobs.append(((ip, ip, ip, ip),
-                     (1,0,2,3)))
+    # ip == jp == kp == lp
+    recipe = ((1,0,2,3),)
+    for ip in range(ngroups):
+        jobs.append(((ip, ip, ip, ip), recipe))
     return jobs
 
 def _vk_jobs_s8(ngroups, hermi=1):
     jobs = []
+    if hermi:
+        recipe = ((1,2,0,3), (1,3,0,2), (0,2,1,3), (0,3,1,2),
+                  (3,0,2,1),            (2,0,3,1)           )
+    else:
+        recipe = ((1,2,0,3), (1,3,0,2), (0,2,1,3), (0,3,1,2),
+                  (3,0,2,1), (3,1,2,0), (2,0,3,1), (2,1,3,0))
     for ip in range(ngroups):
         for jp in range(ip):
             for kp in range(ip):
                 for lp in range(kp):
-                    if hermi:
-                        jobs.append(((ip, jp, kp, lp),
-                                     (1,2,0,3), (1,3,0,2), (0,2,1,3), (0,3,1,2),
-                                     (3,0,2,1),            (2,0,3,1)           ))
-                    else:
-                        jobs.append(((ip, jp, kp, lp),
-                                     (1,2,0,3), (1,3,0,2), (0,2,1,3), (0,3,1,2),
-                                     (3,0,2,1), (3,1,2,0), (2,0,3,1), (2,1,3,0)))
+                    jobs.append(((ip, jp, kp, lp), recipe))
 
-                # ip > jp, ip > kp, kp == lp
+    # ip > jp, ip > kp, kp == lp
+    if hermi:
+        recipe = ((1,2,0,3), (0,2,1,3),            (2,0,3,1))
+    else:
+        recipe = ((1,2,0,3), (0,2,1,3), (2,1,3,0), (2,0,3,1))
+    for ip in range(ngroups):
+        for jp in range(ip):
+            for kp in range(ip):
                 lp = kp
-                if hermi:
-                    jobs.append(((ip, jp, kp, lp),
-                                 (1,2,0,3), (0,2,1,3),            (2,0,3,1)))
-                else:
-                    jobs.append(((ip, jp, kp, lp),
-                                 (1,2,0,3), (0,2,1,3), (2,1,3,0), (2,0,3,1)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-            # ip == kp and ip > jp and kp > lp
+    # ip == kp and ip > jp and kp > lp
+    recipe = ((1,2,0,3), (0,2,1,3), (1,3,0,2), (0,3,1,2))
+    for ip in range(ngroups):
+        for jp in range(ip):
             kp = ip
             for lp in range(kp):
-                jobs.append(((ip, jp, kp, lp),
-                             (1,2,0,3), (0,2,1,3), (1,3,0,2), (0,3,1,2)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp and ip >= kp
+    # ip == jp and ip >= kp
+    if hermi:
+        recipe = ((1,2,0,3), (1,3,0,2),            (3,1,2,0))
+    else:
+        recipe = ((1,2,0,3), (1,3,0,2), (2,1,3,0), (3,1,2,0))
+    for ip in range(ngroups):
         jp = ip
         for kp in range(ip+1):
             for lp in range(kp):
-                if hermi:
-                    jobs.append(((ip, jp, kp, lp),
-                                 (1,2,0,3), (1,3,0,2),            (3,1,2,0)))
-                else:
-                    jobs.append(((ip, jp, kp, lp),
-                                 (1,2,0,3), (1,3,0,2), (2,1,3,0), (3,1,2,0)))
+                jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp and ip > kp and kp == lp
+    # ip == jp and ip > kp and kp == lp
+    if hermi:
+        recipe = ((1,2,0,3),)
+    else:
+        recipe = ((1,2,0,3), (3,0,2,1))
+    for ip in range(ngroups):
         jp = ip
         for kp in range(ip):
             lp = kp
-            if hermi:
-                jobs.append(((ip, jp, kp, lp),
-                             (1,2,0,3)))
-            else:
-                jobs.append(((ip, jp, kp, lp),
-                             (1,2,0,3), (3,0,2,1)))
+            jobs.append(((ip, jp, kp, lp), recipe))
 
-        # ip == jp == kp == lp
-        jobs.append(((ip, ip, ip, ip),
-                     (1,2,0,3)))
+    # ip == jp == kp == lp
+    recipe = ((1,2,0,3),)
+    for ip in range(ngroups):
+        jobs.append(((ip, ip, ip, ip), recipe))
     return jobs
 
 
