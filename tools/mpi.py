@@ -535,12 +535,21 @@ def _distribute_call(module, name, reg_procs, args, kwargs):
     dev = reg_procs
     if module is None:  # Master process
         fn = name
-    elif dev is None:
-        fn = getattr(importlib.import_module(module), name)
     else:
-        from mpi4pyscf.tools import mpi
-        dev = mpi._registry[reg_procs[mpi.rank]]
         fn = getattr(importlib.import_module(module), name)
+        if dev is None:
+            pass
+        elif isinstance(dev, str) and dev[0] == '{':
+            # Guess whether dev is Mole or Cell, then deserialize dev
+            from pyscf.gto import mole
+            from pyscf.pbc.gto import cell
+            if '_pseudo' in dev:
+                dev = cell.loads(dev)
+            elif '_bas' in dev:
+                dev= mole.loads(dev)
+        else:
+            from mpi4pyscf.tools import mpi
+            dev = mpi._registry[reg_procs[mpi.rank]]
     return fn(dev, *args, **kwargs)
 
 if rank == 0:
@@ -549,12 +558,10 @@ if rank == 0:
             if pool.worker_status == 'R':
 # A direct call if worker is not in pending mode
                 return f(dev, *args, **kwargs)
-            elif hasattr(dev, '_reg_procs'):
-                return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
             else:
                 return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, None, args, kwargs))
+                                  (f.__module__, f.__name__,
+                                   _dev_for_worker(dev), args, kwargs))
         return with_mpi
 else:
     def parallel_call(f):
@@ -575,26 +582,28 @@ if rank == 0:
         return main_yield
     def reduced_yield(f):
         def with_mpi(dev, *args, **kwargs):
-            return pool.apply(_distribute_call, (None, _merge_yield(f), dev, args, kwargs),
-                              (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+            if pool.worker_status == 'R':
+                return f(dev, *args, **kwargs)
+            else:
+                return pool.apply(_distribute_call, (None, _merge_yield(f), dev, args, kwargs),
+                                  (f.__module__, f.__name__,
+                                   _dev_for_worker(dev), args, kwargs))
         return with_mpi
 else:
     def reduced_yield(f):
         def client_yield(*args, **kwargs):
-            for x in f(*args, **kwargs):
-                comm.send(x, 0)
-            comm.send('EOY', 0)
+            if pool.worker_status == 'R':
+                return f(*args, **kwargs)
+            else:
+                for x in f(*args, **kwargs):
+                    comm.send(x, 0)
+                comm.send('EOY', 0)
         return client_yield
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
     from mpi4pyscf.tools import mpi
-    if module is None:  # Master process
-        fn = name
-        dev = reg_procs
-    else:
-        dev = mpi._registry[reg_procs[mpi.rank]]
-        fn = getattr(importlib.import_module(module), name)
-    return mpi.reduce(fn(dev, *args, **kwargs))
+    result = _distribute_call(module, name, reg_procs, args, kwargs)
+    return mpi.reduce(result)
 if rank == 0:
     def call_then_reduce(f):
         def with_mpi(dev, *args, **kwargs):
@@ -603,11 +612,21 @@ if rank == 0:
                 return reduce(f(dev, *args, **kwargs))
             else:
                 return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
+                                  (f.__module__, f.__name__,
+                                   _dev_for_worker(dev), args, kwargs))
         return with_mpi
 else:
     def call_then_reduce(f):
         return f
+
+def _dev_for_worker(dev):
+    '''The first argument (dev) to be sent to workers'''
+    if hasattr(dev, '_reg_procs'):
+        return dev._reg_procs
+    elif isinstance(dev, mole.Mole):
+        return dev.dumps()
+    else:
+        return dev
 
 
 def _segment_counts(counts, p0, p1):

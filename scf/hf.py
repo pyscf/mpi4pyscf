@@ -5,6 +5,7 @@ import copy
 import ctypes
 import numpy
 from pyscf import lib
+from pyscf import gto
 from pyscf import scf
 from pyscf import ao2mo
 from pyscf.scf import jk
@@ -17,38 +18,50 @@ comm = mpi.comm
 rank = mpi.rank
 
 @mpi.parallel_call
-def get_jk(mf, mol, dm, hermi=1):
+def get_jk(mol_or_mf, dm, hermi=1):
     '''MPI version of scf.hf.get_jk function'''
-    vj = get_j(mf, mol, dm, hermi)
-    vk = get_k(mf, mol, dm, hermi)
+    vj = get_j(mol_or_mf, dm, hermi)
+    vk = get_k(mol_or_mf, dm, hermi)
     return vj, vk
 
 @mpi.parallel_call
-def get_j(mf, mol, dm, hermi=1):
-    mf.unpack_(comm.bcast(mf.pack()))
+def get_j(mol_or_mf, dm, hermi=1):
+    if isinstance(mol_or_mf, gto.mole.Mole):
+        mf = scf.hf.SCF(mol_or_mf).view(SCF)
+    else:
+        mf = mol_or_mf
+
     hermi = 1
     nao = dm.shape[0]
     dm = dm + dm.T
     dm[numpy.diag_indices(nao)] *= .5
     dm[numpy.tril_indices(nao, -1)] = 0
+
+    mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
-        mf.opt = mf.init_direct_scf(mol)
+        mf.opt = mf.init_direct_scf()
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
-        vj = _eval_jk(mf, mol, dm, hermi, _vj_jobs_s8)
+        vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
     return vj
 
 @mpi.parallel_call
-def get_k(mf, mol, dm, hermi=1):
+def get_k(mol_or_mf, dm, hermi=1):
+    if isinstance(mol_or_mf, gto.mole.Mole):
+        mf = scf.hf.SCF(mol_or_mf).view(SCF)
+    else:
+        mf = mol_or_mf
+
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
-        mf.opt = mf.init_direct_scf(mol)
+        mf.opt = mf.init_direct_scf()
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vk_prescreen')):
-        vk = _eval_jk(mf, mol, dm, hermi, _vk_jobs_s8)
+        vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)
     return vk
 
-def _eval_jk(mf, mol, dm, hermi, gen_jobs):
+def _eval_jk(mf, dm, hermi, gen_jobs):
+    mol = mf.mol
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
     vk = numpy.zeros((nao,nao))
@@ -230,11 +243,17 @@ def _vk_jobs_s8(ngroups, hermi=1):
 
 
 @mpi.register_class
-class RHF(scf.hf.RHF):
+class SCF(scf.hf.SCF):
 
-    get_jk = get_jk
-    get_j = get_j
-    get_k = get_k
+    def get_jk(self, mol, dm, hermi=1):
+# Ignore the mol object
+        return get_jk(self, dm, hermi)
+
+    def get_j(self, mol, dm, hermi=1):
+        return get_j(self, dm, hermi)
+
+    def get_k(self, mol, dm, hermi=1):
+        return get_k(self, dm, hermi)
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -245,10 +264,12 @@ class RHF(scf.hf.RHF):
 
     def dump_flags(self):
         if rank == 0:
-            scf.hf.RHF.dump_flags(self)
+            scf.hf.SCF.dump_flags(self)
         return self
     def sanity_check(self):
         if rank == 0:
-            scf.hf.RHF.sanity_check(self)
+            scf.hf.SCF.sanity_check(self)
         return self
 
+class RHF(SCF):
+    pass
