@@ -30,16 +30,24 @@ def get_j(mf, mol, dm, hermi=1):
     dm = dm + dm.T
     dm[numpy.diag_indices(nao)] *= .5
     dm[numpy.tril_indices(nao, -1)] = 0
-    vj = _eval_jk(mf, mol, dm, hermi, _vj_jobs_s8, _generate_vj_s8_prescreen)
+    if mol.nbas > 600:
+        gen_prescreen = _generate_vj_s8_prescreen
+    else:
+        gen_prescreen = None
+    vj = _eval_jk(mf, mol, dm, hermi, _vj_jobs_s8, gen_prescreen)
     return vj
 
 @mpi.parallel_call
 def get_k(mf, mol, dm, hermi=1):
     mf.unpack_(comm.bcast(mf.pack()))
-    vk = _eval_jk(mf, mol, dm, hermi, _vk_jobs_s8, _generate_vk_s8_prescreen)
+    if mol.nbas > 600:
+        gen_prescreen = _generate_vk_s8_prescreen
+    else:
+        gen_prescreen = None
+    vk = _eval_jk(mf, mol, dm, hermi, _vk_jobs_s8, gen_prescreen)
     return vk
 
-def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
+def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen=None):
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
     vk = numpy.zeros((nao,nao))
@@ -55,16 +63,23 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
         vhfopt = mf.opt
     vhfopt._dmcondname = None # to skip set_dm in _vhf.direct_bindm
 
-    # _vhf.direct_bindm does not support prescreen in pyscf-1.6
-    vhfopt._this.contents.fprescreen = _vhf._fpointer('CVHFnoscreen')
-
     ngroups = len(bas_groups)
     nbas = mol.nbas
     q_cond = lib.frompointer(vhfopt._this.contents.q_cond, nbas**2)
     q_cond = q_cond.reshape(nbas,nbas)
     dm_cond = mol.condense_to_shell(abs(dm))
     dm_cond = (dm_cond + dm_cond.T) * .5
-    prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
+    if gen_prescreen is None:
+        prescreen = lambda *args: True
+    else:
+        prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
+
+    # Skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
+    # The prescreen function CVHFnrs8_prescreen will search for q_cond and
+    # dm_cond over the entire basis. "set_dm" in function jk.get_jk/direct_bindm
+    # only creates a subblock of dm_cond which is not compatible with
+    # CVHFnrs8_prescreen.
+    vhfopt._this.contents.dm_cond = dm_cond.ctypes.data_as(ctypes.c_void_p)
 
     if 1:
         # To avoid overhead of jk.get_jk, some initialization for
@@ -146,6 +161,11 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen):
                 kpart = numpy.ndarray((p1-p0,q1-q0), buffer=jk_buffer[i])
                 vk[p0:p1,q0:q1] += kpart
 
+    # dm_cond's memory will be released when destructing vhfopt. dm_cond is
+    # now bound to an nparray. It needs to be detached before deleting
+    # vhfopt.
+    vhfopt._this.contents.dm_cond = None
+
     logger.alldebug1(mf, 'job count %d, skip %d', count, skip)
     vk = mpi.reduce(vk)
     if rank == 0 and hermi:
@@ -157,9 +177,15 @@ def _partition_bas(mol):
     nbas_per_atom = aoslice[:,1] - aoslice[:,0]
     nthreads = lib.num_threads()
     nbas = mol.nbas
-    # For OMP load balance, each thread at least evaluates 50 pairs of shells.
-    batch_size = int(min((nthreads * 50)**.5,
-                         nbas_per_atom.max()*2))
+    # Enough workload in each batch (here 600 pairs of shells per thread) for
+    # OMP load balance.
+    batch_size = ((nthreads * 600)**.5,
+    # Avoid huge batch to respect the locality and 8-fold symmetry.
+                   nbas_per_atom.mean()*10)
+    batch_size = int(min(numpy.prod(batch_size)**.5,
+    # Enough workload (60 batches per proc) for MPI processors to utilize the
+    # load balance function work_stealing_partition
+                         nbas / (mpi.pool.size*60*8)**.25))
     bas_groups = list(lib.prange(0, mol.nbas, batch_size))
     logger.debug1(mol, 'batch_size %d, ngroups = %d',
                   batch_size, len(bas_groups))
