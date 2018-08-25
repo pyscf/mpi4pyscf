@@ -30,21 +30,21 @@ def get_j(mf, mol, dm, hermi=1):
     dm = dm + dm.T
     dm[numpy.diag_indices(nao)] *= .5
     dm[numpy.tril_indices(nao, -1)] = 0
-    if mol.nbas > 600:
-        gen_prescreen = _generate_vj_s8_prescreen
-    else:
-        gen_prescreen = None
-    vj = _eval_jk(mf, mol, dm, hermi, _vj_jobs_s8, gen_prescreen)
+    if mf.opt is None:
+        mf.opt = mf.init_direct_scf(mol)
+    with lib.temporary_env(mf.opt._this.contents,
+                           fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
+        vj = _eval_jk(mf, mol, dm, hermi, _vj_jobs_s8, _generate_s8_vj_prescreen)
     return vj
 
 @mpi.parallel_call
 def get_k(mf, mol, dm, hermi=1):
     mf.unpack_(comm.bcast(mf.pack()))
-    if mol.nbas > 600:
-        gen_prescreen = _generate_vk_s8_prescreen
-    else:
-        gen_prescreen = None
-    vk = _eval_jk(mf, mol, dm, hermi, _vk_jobs_s8, gen_prescreen)
+    if mf.opt is None:
+        mf.opt = mf.init_direct_scf(mol)
+    with lib.temporary_env(mf.opt._this.contents,
+                           fprescreen=_vhf._fpointer('CVHFnrs8_vk_prescreen')):
+        vk = _eval_jk(mf, mol, dm, hermi, _vk_jobs_s8, _generate_s8_vk_prescreen)
     return vk
 
 def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen=None):
@@ -61,7 +61,6 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen=None):
         vhfopt = mf.init_direct_scf(mol)
     else:
         vhfopt = mf.opt
-    vhfopt._dmcondname = None # to skip set_dm in _vhf.direct_bindm
 
     ngroups = len(bas_groups)
     nbas = mol.nbas
@@ -69,19 +68,18 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen=None):
     q_cond = q_cond.reshape(nbas,nbas)
     dm_cond = mol.condense_to_shell(abs(dm))
     dm_cond = (dm_cond + dm_cond.T) * .5
-    if gen_prescreen is None:
-        prescreen = lambda *args: True
-    else:
-        prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
+    prescreen = gen_prescreen(mf, q_cond, dm_cond, bas_groups)
 
     # Skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
-    # The prescreen function CVHFnrs8_prescreen will search for q_cond and
-    # dm_cond over the entire basis. "set_dm" in function jk.get_jk/direct_bindm
-    # only creates a subblock of dm_cond which is not compatible with
-    # CVHFnrs8_prescreen.
+    vhfopt._dmcondname = None
+    # Assign the entire dm_cond to vhfopt.  The prescreen function
+    # CVHFnrs8_prescreen will search for q_cond and dm_cond over the entire
+    # basis. "set_dm" in function jk.get_jk/direct_bindm only creates a
+    # subblock of dm_cond which is not compatible with CVHFnrs8_prescreen.
     vhfopt._this.contents.dm_cond = dm_cond.ctypes.data_as(ctypes.c_void_p)
 
-    if 1:
+    debug = False
+    if not debug:
         # To avoid overhead of jk.get_jk, some initialization for
         # _vhf.direct_bindm.
         c_atm = mol._atm.ctypes.data_as(ctypes.c_void_p)
@@ -131,7 +129,7 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs, gen_prescreen=None):
         shls_slice = lib.flatten([bas_groups[i] for i in group_ids])
         loc = ao_loc[shls_slice].reshape(4,2)
 
-        if 0: # Avoid the overhead in jk.get_jk
+        if debug:
             dms = []
             scripts = []
             for rec in recipe:
@@ -191,7 +189,7 @@ def _partition_bas(mol):
                   batch_size, len(bas_groups))
     return bas_groups
 
-def _generate_vj_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
+def _generate_s8_vj_prescreen(mf, q_cond, dm_cond, bas_groups):
     bas_groups = numpy.asarray(bas_groups)
     direct_scf_tol = mf.direct_scf_tol
     def test(q1, dm, q2):
@@ -212,7 +210,7 @@ def _generate_vj_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
             return False
     return vj_screen
 
-def _generate_vk_s8_prescreen(mf, q_cond, dm_cond, bas_groups):
+def _generate_s8_vk_prescreen(mf, q_cond, dm_cond, bas_groups):
     bas_groups = numpy.asarray(bas_groups)
     direct_scf_tol = mf.direct_scf_tol
 
