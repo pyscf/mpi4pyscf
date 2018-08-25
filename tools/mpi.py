@@ -562,6 +562,7 @@ if rank == 0:
                 return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
                                   (f.__module__, f.__name__,
                                    _dev_for_worker(dev), args, kwargs))
+        with_mpi.__doc__ = f.__doc__
         return with_mpi
 else:
     def parallel_call(f):
@@ -588,6 +589,7 @@ if rank == 0:
                 return pool.apply(_distribute_call, (None, _merge_yield(f), dev, args, kwargs),
                                   (f.__module__, f.__name__,
                                    _dev_for_worker(dev), args, kwargs))
+        with_mpi.__doc__ = f.__doc__
         return with_mpi
 else:
     def reduced_yield(f):
@@ -598,6 +600,7 @@ else:
                 for x in f(*args, **kwargs):
                     comm.send(x, 0)
                 comm.send('EOY', 0)
+        client_yield.__doc__ = f.__doc__
         return client_yield
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
@@ -614,6 +617,7 @@ if rank == 0:
                 return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
                                   (f.__module__, f.__name__,
                                    _dev_for_worker(dev), args, kwargs))
+        with_mpi.__doc__ = f.__doc__
         return with_mpi
 else:
     def call_then_reduce(f):

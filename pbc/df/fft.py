@@ -24,7 +24,7 @@ from pyscf.pbc.df import fft
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import fft_jk
+from mpi4pyscf.pbc.df import fft_jk as mpi_fft_jk
 
 comm = mpi.comm
 rank = mpi.rank
@@ -240,14 +240,14 @@ class FFTDF(fft.FFTDF):
         vj = vk = None
         if kpts.shape == (3,):
             if with_k:
-                vk = fft_jk.get_k(self, dm, hermi, kpts, kpts_band, exxdiv)
+                vk = mpi_fft_jk.get_k(self, dm, hermi, kpts, kpts_band, exxdiv)
             if with_j:
-                vj = fft_jk.get_j(self, dm, hermi, kpts, kpts_band)
+                vj = mpi_fft_jk.get_j(self, dm, hermi, kpts, kpts_band)
         else:
             if with_k:
-                vk = fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+                vk = mpi_fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
             if with_j:
-                vj = fft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+                vj = mpi_fft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
 

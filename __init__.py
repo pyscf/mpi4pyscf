@@ -10,6 +10,7 @@ from . import pbc
 from . import cc
 from . import mp
 from . import scf
+from . import dft
 
 
 # NOTE: suspend all slave processes at last

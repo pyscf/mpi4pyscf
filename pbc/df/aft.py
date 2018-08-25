@@ -20,8 +20,8 @@ from pyscf.pbc import gto as pbcgto
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import aft_jk
-from mpi4pyscf.pbc.df import aft_ao2mo
+from mpi4pyscf.pbc.df import aft_jk as mpi_aft_jk
+from mpi4pyscf.pbc.df import aft_ao2mo as mpi_aft_ao2mo
 
 comm = mpi.comm
 rank = mpi.rank
@@ -150,8 +150,8 @@ class AFTDF(aft.AFTDF):
     get_nuc = get_nuc
     get_pp = get_pp
 
-    get_eri = get_ao_eri = aft_ao2mo.get_eri
-    ao2mo = get_mo_eri = aft_ao2mo.general
+    get_eri = get_ao_eri = mpi_aft_ao2mo.get_eri
+    ao2mo = get_mo_eri = mpi_aft_ao2mo.general
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
                with_j=True, with_k=True, exxdiv='ewald'):
@@ -165,14 +165,14 @@ class AFTDF(aft.AFTDF):
             kpts = numpy.asarray(kpts)
 
         if kpts.shape == (3,):
-            return aft_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
-                                 with_k, exxdiv)
+            return mpi_aft_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                     with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = aft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+            vk = mpi_aft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
         if with_j:
-            vj = aft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+            vj = mpi_aft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
 

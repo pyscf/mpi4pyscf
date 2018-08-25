@@ -6,8 +6,8 @@ import ctypes
 import numpy
 from pyscf import lib
 from pyscf import gto
-from pyscf import scf
 from pyscf import ao2mo
+from pyscf.scf import hf
 from pyscf.scf import jk
 from pyscf.scf import _vhf
 
@@ -27,7 +27,7 @@ def get_jk(mol_or_mf, dm, hermi=1):
 @mpi.parallel_call
 def get_j(mol_or_mf, dm, hermi=1):
     if isinstance(mol_or_mf, gto.mole.Mole):
-        mf = scf.hf.SCF(mol_or_mf).view(SCF)
+        mf = hf.SCF(mol_or_mf).view(SCF)
     else:
         mf = mol_or_mf
 
@@ -48,7 +48,7 @@ def get_j(mol_or_mf, dm, hermi=1):
 @mpi.parallel_call
 def get_k(mol_or_mf, dm, hermi=1):
     if isinstance(mol_or_mf, gto.mole.Mole):
-        mf = scf.hf.SCF(mol_or_mf).view(SCF)
+        mf = hf.SCF(mol_or_mf).view(SCF)
     else:
         mf = mol_or_mf
 
@@ -243,32 +243,37 @@ def _vk_jobs_s8(ngroups, hermi=1):
 
 
 @mpi.register_class
-class SCF(scf.hf.SCF):
+class SCF(hf.SCF):
 
+    @lib.with_doc(hf.SCF.get_jk.__doc__)
     def get_jk(self, mol, dm, hermi=1):
-# Ignore the mol object
+        assert(mol is self.mol)
         return get_jk(self, dm, hermi)
 
+    @lib.with_doc(hf.SCF.get_j.__doc__)
     def get_j(self, mol, dm, hermi=1):
+        assert(mol is self.mol)
         return get_j(self, dm, hermi)
 
+    @lib.with_doc(hf.SCF.get_k.__doc__)
     def get_k(self, mol, dm, hermi=1):
+        assert(mol is self.mol)
         return get_k(self, dm, hermi)
 
     def pack(self):
-        return {'verbose'   : self.verbose,
+        return {'verbose': self.verbose,
                 'direct_scf_tol': self.direct_scf_tol}
-    def unpack_(self, hf_dic):
-        self.__dict__.update(hf_dic)
+    def unpack_(self, mf_dic):
+        self.__dict__.update(mf_dic)
         return self
 
     def dump_flags(self):
         if rank == 0:
-            scf.hf.SCF.dump_flags(self)
+            hf.SCF.dump_flags(self)
         return self
     def sanity_check(self):
         if rank == 0:
-            scf.hf.SCF.sanity_check(self)
+            hf.SCF.sanity_check(self)
         return self
 
 class RHF(SCF):

@@ -24,9 +24,9 @@ from pyscf.pbc import gto as pbcgto
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import df_jk
-from mpi4pyscf.pbc.df import df_ao2mo
-from mpi4pyscf.pbc.df import aft
+from mpi4pyscf.pbc.df import df_jk as mpi_df_jk
+from mpi4pyscf.pbc.df import df_ao2mo as mpi_df_ao2mo
+from mpi4pyscf.pbc.df import aft as mpi_aft
 
 comm = mpi.comm
 rank = mpi.rank
@@ -487,14 +487,14 @@ def _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, 
 
 
 @mpi.register_class
-class DF(df.DF, aft.AFTDF):
+class DF(df.DF, mpi_aft.AFTDF):
 
     build = build
     _make_j3c = _make_j3c
 
-    get_nuc = aft.get_nuc
-    get_pp = aft.get_pp
-    _int_nuc_vloc = aft._int_nuc_vloc
+    get_nuc = mpi_aft.get_nuc
+    get_pp = mpi_aft.get_pp
+    _int_nuc_vloc = mpi_aft._int_nuc_vloc
 
     def dump_flags(self):
         return df.DF.dump_flags(self, logger.Logger(self.stdout, self.verbose))
@@ -533,20 +533,20 @@ class DF(df.DF, aft.AFTDF):
             kpts = numpy.asarray(kpts)
 
         if kpts.shape == (3,):
-            return df_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
-                                with_k, exxdiv)
+            return mpi_df_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                    with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+            vk = mpi_df_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
         if with_j:
-            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+            vj = mpi_df_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
-    get_eri = get_ao_eri = df_ao2mo.get_eri
-    ao2mo = get_mo_eri = df_ao2mo.general
+    get_eri = get_ao_eri = mpi_df_ao2mo.get_eri
+    ao2mo = get_mo_eri = mpi_df_ao2mo.general
 
-    mpi_prange = prange = aft.AFTDF.mpi_prange
+    mpi_prange = prange = mpi_aft.AFTDF.mpi_prange
 
 
     def loop(self):

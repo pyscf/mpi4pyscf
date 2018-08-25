@@ -27,10 +27,10 @@ from pyscf.ao2mo.outcore import balance_segs
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import mdf_jk
-from mpi4pyscf.pbc.df import mdf_ao2mo
-from mpi4pyscf.pbc.df import df
-from mpi4pyscf.pbc.df import aft
+from mpi4pyscf.pbc.df import mdf_jk as mpi_mdf_jk
+from mpi4pyscf.pbc.df import mdf_ao2mo as mpi_mdf_ao2mo
+from mpi4pyscf.pbc.df import df as mpi_df
+from mpi4pyscf.pbc.df import aft as mpi_aft
 
 comm = mpi.comm
 rank = mpi.rank
@@ -126,7 +126,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                          nao/3/mpi.pool.size)), 1)
     chunks = (buflen, nao)
 
-    j3c_jobs = df.grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks, j_only)
+    j3c_jobs = mpi_df.grids2d_int3c_jobs(cell, auxcell, kptij_lst, chunks, j_only)
     log.debug1('max_memory = %d MB (%d in use)  chunks %s',
                max_memory, mem_now, chunks)
     log.debug2('j3c_jobs %s', j3c_jobs)
@@ -279,11 +279,11 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             if j2c_negative is not None:
                 fswap['j3c-/%d/%d'%(job_id,idx)] = lib.dot(j2c_negative, v)
 
-    df._assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log)
+    mpi_df._assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log)
 
 
 @mpi.register_class
-class MDF(mdf.MDF, df.DF):
+class MDF(mdf.MDF, mpi_df.DF):
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -300,9 +300,9 @@ class MDF(mdf.MDF, df.DF):
 
     _make_j3c = _make_j3c
 
-    get_nuc = aft.get_nuc
-    get_pp = aft.get_pp
-    _int_nuc_vloc = aft._int_nuc_vloc
+    get_nuc = mpi_aft.get_nuc
+    get_pp = mpi_aft.get_pp
+    _int_nuc_vloc = mpi_aft._int_nuc_vloc
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
                with_j=True, with_k=True, exxdiv='ewald'):
@@ -316,18 +316,18 @@ class MDF(mdf.MDF, df.DF):
             kpts = numpy.asarray(kpts)
 
         if kpts.shape == (3,):
-            return mdf_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
-                                 with_k, exxdiv)
+            return mpi_mdf_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                     with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+            vk = mpi_mdf_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
         if with_j:
-            vj = mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+            vj = mpi_mdf_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
-    get_eri = get_ao_eri = mdf_ao2mo.get_eri
-    ao2mo = get_mo_eri = mdf_ao2mo.general
+    get_eri = get_ao_eri = mpi_mdf_ao2mo.get_eri
+    ao2mo = get_mo_eri = mpi_mdf_ao2mo.general
 
 
     def loop(self):
@@ -343,9 +343,9 @@ class MDF(mdf.MDF, df.DF):
 
     def get_naoaux(self):
         if mpi.pool.worker_status == 'P':
-            return df.get_naoaux(self) + aft.AFTDF.get_naoaux(self)
+            return mpi_df.get_naoaux(self) + mpi_aft.AFTDF.get_naoaux(self)
         else:
-            return df.DF.get_naoaux(self)
+            return mpi_df.DF.get_naoaux(self)
 
 
 def _sync_mydf(mydf):
