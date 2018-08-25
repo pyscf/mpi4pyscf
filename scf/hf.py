@@ -6,6 +6,7 @@ import ctypes
 import numpy
 from pyscf import lib
 from pyscf import scf
+from pyscf import ao2mo
 from pyscf.scf import jk
 from pyscf.scf import _vhf
 
@@ -102,22 +103,15 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs):
     return vk
 
 def _partition_bas(mol):
-    aoslice = mol.aoslice_by_atom()
-    nbas_per_atom = aoslice[:,1] - aoslice[:,0]
-    nthreads = lib.num_threads()
-    nbas = mol.nbas
-    # Enough workload in each batch (here 600 pairs of shells per thread) for
-    # OMP load balance.
-    batch_size = ((nthreads * 600)**.5,
-    # Avoid huge batch, to respect the locality and 8-fold symmetry.
-                   nbas_per_atom.mean()*10)
-    batch_size = int(min(numpy.prod(batch_size)**.5,
-    # Enough workload (60 batches per proc) for MPI processors to utilize the
-    # load balance function work_stealing_partition
-                         nbas / (mpi.pool.size*60*8)**.25))
-    bas_groups = list(lib.prange(0, mol.nbas, batch_size))
-    logger.debug1(mol, 'batch_size %d, ngroups = %d',
-                  batch_size, len(bas_groups))
+    ao_loc = mol.ao_loc_nr()
+    nao = ao_loc[-1]
+    ngroups = max((mpi.pool.size*60*8)**.25, 9)
+    blksize = max(60, min(nao / ngroups, 600))
+    groups = ao2mo.outcore.balance_partition(ao_loc, blksize)
+    bas_groups = [x[:2] for x in groups]
+    logger.debug1(mol, 'mpi.size %d, blksize = %d, ngroups = %d',
+                  mpi.pool.size, blksize, len(bas_groups))
+    logger.debug2(mol, 'bas_groups = %s', bas_groups)
     return bas_groups
 
 def _vj_jobs_s8(ngroups, hermi=1):
