@@ -62,15 +62,14 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs):
         vhfopt = mf.init_direct_scf(mol)
     else:
         vhfopt = mf.opt
-    # Skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
+    # Assign the entire dm_cond to vhfopt.
+    # The prescreen function CVHFnrs8_prescreen will index q_cond and dm_cond
+    # over the entire basis.  "set_dm" in function jk.get_jk/direct_bindm only
+    # creates a subblock of dm_cond which is not compatible with
+    # CVHFnrs8_prescreen.
+    vhfopt.set_dm(dm, mol._atm, mol._bas, mol._env)
+    # Then skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
     vhfopt._dmcondname = None
-    # Assign the entire dm_cond to vhfopt.  The prescreen function
-    # CVHFnrs8_prescreen will search for q_cond and dm_cond over the entire
-    # basis. "set_dm" in function jk.get_jk/direct_bindm only creates a
-    # subblock of dm_cond which is not compatible with CVHFnrs8_prescreen.
-    dm_cond = mol.condense_to_shell(abs(dm))
-    dm_cond = (dm_cond + dm_cond.T) * .5
-    vhfopt._this.contents.dm_cond = dm_cond.ctypes.data_as(ctypes.c_void_p)
 
     for job_id in mpi.work_stealing_partition(range(njobs)):
         group_ids, recipe = jobs[job_id]
@@ -82,7 +81,7 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs):
         for rec in recipe:
             p0, p1 = loc[rec[0]]
             q0, q1 = loc[rec[1]]
-            dms.append(numpy.asarray(dm[p0:p1,q0:q1], order='C'))
+            dms.append(dm[p0:p1,q0:q1])
         scripts = ['ijkl,%s%s->%s%s' % tuple(['ijkl'[x] for x in rec])
                    for rec in recipe]
         kparts = jk.get_jk(mol, dms, scripts, shls_slice=shls_slice,
@@ -91,11 +90,6 @@ def _eval_jk(mf, mol, dm, hermi, gen_jobs):
             p0, p1 = loc[rec[2]]
             q0, q1 = loc[rec[3]]
             vk[p0:p1,q0:q1] += kparts[i]
-
-    # dm_cond's memory will be released when destructing vhfopt. dm_cond is
-    # now bound to an nparray. It needs to be detached before deleting
-    # vhfopt.
-    vhfopt._this.contents.dm_cond = None
 
     vk = mpi.reduce(vk)
     if rank == 0 and hermi:
