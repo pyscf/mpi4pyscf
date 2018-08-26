@@ -1,8 +1,5 @@
 #!/usr/bin/env python
 
-import time
-import copy
-import ctypes
 import numpy
 from pyscf import lib
 from pyscf import gto
@@ -20,9 +17,18 @@ rank = mpi.rank
 @mpi.parallel_call
 def get_jk(mol_or_mf, dm, hermi=1):
     '''MPI version of scf.hf.get_jk function'''
-    vj = get_j(mol_or_mf, dm, hermi)
-    vk = get_k(mol_or_mf, dm, hermi)
-    return vj, vk
+    #vj = get_j(mol_or_mf, dm, hermi)
+    #vk = get_k(mol_or_mf, dm, hermi)
+    if isinstance(mol_or_mf, gto.mole.Mole):
+        mf = hf.SCF(mol_or_mf).view(SCF)
+    else:
+        mf = mol_or_mf
+
+    mf.unpack_(comm.bcast(mf.pack()))
+    if mf.opt is None:
+        mf.opt = mf.init_direct_scf()
+    vj, vk = _eval_jk(mf, [dm]*2, hermi, _jk_jobs_s8)
+    return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
 @mpi.parallel_call
 def get_j(mol_or_mf, dm, hermi=1):
@@ -31,11 +37,14 @@ def get_j(mol_or_mf, dm, hermi=1):
     else:
         mf = mol_or_mf
 
-    hermi = 1
-    nao = dm.shape[0]
-    dm = dm + dm.T
-    dm[numpy.diag_indices(nao)] *= .5
-    dm[numpy.tril_indices(nao, -1)] = 0
+    if isinstance(dm, numpy.ndarray) and dm.ndim == 2:
+        hermi = 1
+        nao = dm.shape[0]
+        dm = dm + dm.T
+        dm[numpy.diag_indices(nao)] *= .5
+        dm[numpy.tril_indices(nao, -1)] = 0
+    else:
+        hermi = 0
 
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
@@ -43,7 +52,7 @@ def get_j(mol_or_mf, dm, hermi=1):
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
         vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
-    return vj
+    return vj.reshape(dm.shape)
 
 @mpi.parallel_call
 def get_k(mol_or_mf, dm, hermi=1):
@@ -58,18 +67,23 @@ def get_k(mol_or_mf, dm, hermi=1):
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vk_prescreen')):
         vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)
-    return vk
+    return vk.reshape(dm.shape)
 
 def _eval_jk(mf, dm, hermi, gen_jobs):
     mol = mf.mol
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
-    vk = numpy.zeros((nao,nao))
 
     bas_groups = _partition_bas(mol)
     jobs = gen_jobs(len(bas_groups), hermi)
     njobs = len(jobs)
     logger.debug1(mf, 'njobs %d', njobs)
+
+    # Each job has multiple recipes.
+    n_recipes = len(jobs[0][1:])
+    dm = numpy.stack(dm).reshape(n_recipes,-1,nao,nao)
+    vk = numpy.zeros_like(dm)
+    n_dm = dm.shape[1]
 
     if mf.opt is None:
         vhfopt = mf.init_direct_scf(mol)
@@ -85,28 +99,40 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
     vhfopt._dmcondname = None
 
     for job_id in mpi.work_stealing_partition(range(njobs)):
-        group_ids, recipe = jobs[job_id]
+        group_ids = jobs[job_id][0]
+        recipes = jobs[job_id][1:]
 
         shls_slice = lib.flatten([bas_groups[i] for i in group_ids])
         loc = ao_loc[shls_slice].reshape(4,2)
 
-        dms = []
-        for rec in recipe:
-            p0, p1 = loc[rec[0]]
-            q0, q1 = loc[rec[1]]
-            dms.append(dm[p0:p1,q0:q1])
+        dm_blks = []
+        for i_dm in range(n_dm):
+            for ir, recipe in enumerate(recipes):
+                for i, rec in enumerate(recipe):
+                    p0, p1 = loc[rec[0]]
+                    q0, q1 = loc[rec[1]]
+                    dm_blks.append(dm[ir,i_dm,p0:p1,q0:q1])
         scripts = ['ijkl,%s%s->%s%s' % tuple(['ijkl'[x] for x in rec])
-                   for rec in recipe]
-        kparts = jk.get_jk(mol, dms, scripts, shls_slice=shls_slice,
+                   for recipe in recipes
+                       for rec in recipe] * n_dm
+
+        kparts = jk.get_jk(mol, dm_blks, scripts, shls_slice=shls_slice,
                            vhfopt=vhfopt)
-        for i, rec in enumerate(recipe):
-            p0, p1 = loc[rec[2]]
-            q0, q1 = loc[rec[3]]
-            vk[p0:p1,q0:q1] += kparts[i]
+
+        for i_dm in range(n_dm):
+            for ir, recipe in enumerate(recipes):
+                for i, rec in enumerate(recipe):
+                    p0, p1 = loc[rec[2]]
+                    q0, q1 = loc[rec[3]]
+                    vk[ir,i_dm,p0:p1,q0:q1] += kparts[i]
+                # Pop the results of one recipe
+                kparts = kparts[i+1:]
 
     vk = mpi.reduce(vk)
     if rank == 0 and hermi:
-        vk = lib.hermi_triu(vk, hermi, inplace=True)
+        for i in range(n_recipes):
+            for j in range(n_dm):
+                lib.hermi_triu(vk[i,j], hermi, inplace=True)
     return vk
 
 def _partition_bas(mol):
@@ -240,6 +266,15 @@ def _vk_jobs_s8(ngroups, hermi=1):
     for ip in range(ngroups):
         jobs.append(((ip, ip, ip, ip), recipe))
     return jobs
+
+def _jk_jobs_s8(ngroups, hermi=1):
+    j_jobs = _vj_jobs_s8(ngroups)
+    k_jobs = _vk_jobs_s8(ngroups, hermi)
+    njobs = len(j_jobs)
+    assert(len(k_jobs) == len(j_jobs))
+    jk_jobs = [(group, j_recipe, k_jobs[i][1])
+               for i, (group, j_recipe) in enumerate(j_jobs)]
+    return jk_jobs
 
 
 @mpi.register_class
