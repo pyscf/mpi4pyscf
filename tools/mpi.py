@@ -57,7 +57,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
     if rank == 0:
         rest_tasks = list(tasks[loadmin*pool.size:])
 
-    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin][::-1])
+    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin])
     def distribute_task():
         while True:
             load = comm.gather(len(tasks))
@@ -66,7 +66,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
                     jobs = [None] * pool.size
                     for i in range(pool.size):
                         if rest_tasks and load[i] < loadmin:
-                            jobs[i] = rest_tasks.pop()
+                            jobs[i] = rest_tasks.pop(0)
                 else:
                     jobs = ['OUT_OF_TASK'] * pool.size
                 task = comm.scatter(jobs)
@@ -85,7 +85,7 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
 
     while True:
         if tasks:
-            task = tasks.pop()
+            task = tasks.pop(0)
             if isinstance(task, str) and task == 'OUT_OF_TASK':
                 break
             yield task
