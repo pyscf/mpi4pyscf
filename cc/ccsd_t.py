@@ -35,7 +35,7 @@ def kernel(mycc):
     nvir, nocc = t1T.shape
 
     fvo = eris.fock[nocc:,:nocc].copy()
-    mo_energy = eris.fock.diagonal().copy()
+    mo_energy = eris.mo_energy.copy()
     et_sum = numpy.zeros(1, dtype=t1T.dtype)
     drv = _ccsd.libcc.MPICCsd_t_contract
     cpu2 = [time.clock(), time.time()]

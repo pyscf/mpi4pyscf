@@ -80,7 +80,6 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
 def update_amps(mycc, t1, t2, eris):
     time1 = time0 = time.clock(), time.time()
     log = logger.Logger(mycc.stdout, mycc.verbose)
-    fock = eris.fock
     cpu1 = time0
 
     t1T = t1.T
@@ -92,6 +91,10 @@ def update_amps(mycc, t1, t2, eris):
     vloc0, vloc1 = vlocs[rank]
     log.debug2('vlocs %s', vlocs)
     assert(vloc1-vloc0 == nvir_seg)
+
+    fock = eris.fock
+    mo_e_o = eris.mo_energy[:nocc]
+    mo_e_v = eris.mo_energy[nocc:] + mycc.level_shift
 
     def _rotate_vir_block(buf):
         for task_id, buf in _rotate_tensor_block(buf):
@@ -127,12 +130,10 @@ def update_amps(mycc, t1, t2, eris):
     fov = fock[:nocc,nocc:].copy()
     t1Tnew += fock[nocc:,:nocc]
 
-    foo = fock[:nocc,:nocc].copy()
-    foo[numpy.diag_indices(nocc)] = 0
+    foo = fock[:nocc,:nocc] - numpy.diag(mo_e_o)
     foo += .5 * numpy.einsum('ia,aj->ij', fock[:nocc,nocc:], t1T)
 
-    fvv = fock[nocc:,nocc:].copy()
-    fvv[numpy.diag_indices(nvir)] = 0
+    fvv = fock[nocc:,nocc:] - numpy.diag(mo_e_v)
     fvv -= .5 * numpy.einsum('ai,ib->ab', t1T, fock[:nocc,nocc:])
 
     foo_priv = numpy.zeros_like(foo)
@@ -305,8 +306,7 @@ def update_amps(mycc, t1, t2, eris):
     t2Tnew += lib.einsum('acij,bc->abij', t2T, ft_ab)
     t2Tnew -= lib.einsum('ki,abkj->abij', ft_ij, t2T)
 
-    mo_e = fock.diagonal()
-    eia = mo_e[:nocc,None] - mo_e[None,nocc:]
+    eia = mo_e_o[:,None] - mo_e_v
     t1Tnew += numpy.einsum('bi,ab->ai', t1T, fvv)
     t1Tnew -= numpy.einsum('aj,ji->ai', t1T, foo)
     t1Tnew /= eia.T
@@ -652,7 +652,7 @@ def init_amps(mycc, eris=None):
         eris = mycc._eris
 
     time0 = time.clock(), time.time()
-    mo_e = eris.fock.diagonal()
+    mo_e = eris.mo_energy
     nocc = mycc.nocc
     nvir = mo_e.size - nocc
     eia = mo_e[:nocc,None] - mo_e[None,nocc:]
@@ -818,6 +818,7 @@ class CCSD(ccsd.CCSD):
                 '_nocc'     : self._nocc,
                 '_nmo'      : self._nmo,
                 'diis_file' : self.diis_file,
+                'level_shift': self.level_shift,
                 'direct'    : self.direct}
     def unpack_(self, ccdic):
         self.__dict__.update(ccdic)
@@ -892,10 +893,10 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     eris = ccsd._ChemistsERIs()
     if rank == 0:
         eris._common_init_(mycc, mo_coeff)
-        comm.bcast((eris.mo_coeff, eris.fock, eris.nocc))
+        comm.bcast((eris.mo_coeff, eris.fock, eris.nocc, eris.mo_energy))
     else:
         eris.mol = mycc.mol
-        eris.mo_coeff, eris.fock, eris.nocc = comm.bcast(None)
+        eris.mo_coeff, eris.fock, eris.nocc, eris.mo_energy = comm.bcast(None)
 
     mol = mycc.mol
     mo_coeff = numpy.asarray(eris.mo_coeff, order='F')
