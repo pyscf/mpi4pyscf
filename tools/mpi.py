@@ -51,7 +51,7 @@ def work_balanced_partition(tasks, costs=None):
 
 INQUIRY = 50050
 TASK = 50051
-def work_share_partition(tasks, interval=.02, loadmin=2):
+def work_share_partition(tasks, interval=.1, loadmin=2):
     loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
     loadmin = max(loadmin, len(tasks)//50//pool.size, 1)
     if rank == 0:
@@ -93,38 +93,40 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
             time.sleep(interval)
     tasks_handler.join()
 
-def work_stealing_partition(tasks, interval=.02):
+def work_stealing_partition(tasks, interval=.1):
     tasks = list(static_partition(tasks)[::-1])
-    out_of_task = [False]
     def task_daemon():
         while True:
             time.sleep(interval)
-            while comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
-                src, req = comm.recv(source=MPI.ANY_SOURCE, tag=INQUIRY)
-                if isinstance(req, str) and req == 'STOP_DAEMON':
-                    return
-                elif tasks:
-                    comm.send(tasks.pop(), src, tag=TASK)
-                elif src == 0 and isinstance(req, str) and req == 'ALL_DONE':
-                    comm.send(out_of_task[0], src, tag=TASK)
-                elif out_of_task[0]:
-                    comm.send('OUT_OF_TASK', src, tag=TASK)
+
+            ntasks = len(tasks)
+            ntasks_all_workers = comm.allgather(ntasks)
+            if all(n <= 1 for n in ntasks_all_workers):
+                break
+
+            elif any(n <= 1 for n in ntasks_all_workers):
+                ntasks_all_workers = numpy.array(ntasks_all_workers)
+                ntasks_mean = int(ntasks_all_workers.mean()+.9999)
+                mpi_size = pool.size
+                tasks_to_send = [tasks.pop() for i in range(ntasks - ntasks_mean)]
+
+                tasks_to_distriubte = comm.gather(tasks_to_send)
+                if rank == 0:
+                    tasks_to_distriubte = lib.flatten(tasks_to_distriubte)
+                    tasks_to_append = [[] for i in range(mpi_size)]
+                    i = 1
+                    while tasks_to_distriubte and i < mpi_size:
+                        npop = ntasks_mean - ntasks_all_workers[i]
+                        tasks_to_append[i] = tasks_to_distriubte[:npop]
+                        tasks_to_distriubte = tasks_to_distriubte[npop:]
+                        i += 1
+                    tasks_to_append[0] = tasks_to_distriubte
                 else:
-                    comm.send('BYPASS', src, tag=TASK)
-    def prepare_to_stop():
-        out_of_task[0] = True
-        if rank == 0:
-            while True:
-                done = []
-                for i in range(1, pool.size):
-                    comm.send((0,'ALL_DONE'), i, tag=INQUIRY)
-                    done.append(comm.recv(source=i, tag=TASK))
-                if all(done):
-                    break
-                time.sleep(interval)
-            for i in range(pool.size):
-                comm.send((0,'STOP_DAEMON'), i, tag=INQUIRY)
-        tasks_handler.join()
+                    tasks_to_append = None
+
+                tasks_to_append = comm.scatter(tasks_to_append)
+                for task in tasks_to_append:
+                    tasks.append(task)
 
     if pool.size > 1:
         tasks_handler = threading.Thread(target=task_daemon)
@@ -135,30 +137,7 @@ def work_stealing_partition(tasks, interval=.02):
         yield task
 
     if pool.size > 1:
-        def next_proc(proc):
-            proc = (proc+1) % pool.size
-            if proc == rank:
-                proc = (proc+1) % pool.size
-            return proc
-        proc_last = (rank + 1) % pool.size
-        proc = next_proc(proc_last)
-
-        while True:
-            comm.send((rank,None), proc, tag=INQUIRY)
-            task = comm.recv(source=proc, tag=TASK)
-            if isinstance(task, str) and task == 'OUT_OF_TASK':
-                prepare_to_stop()
-                return
-            elif isinstance(task, str) and task == 'BYPASS':
-                if proc == proc_last:
-                    prepare_to_stop()
-                    return
-                else:
-                    proc = next_proc(proc)
-            else:
-                if proc != proc_last:
-                    proc_last, proc = proc, next_proc(proc)
-                yield task
+        tasks_handler.join()
 
 def _create_dtype(dat):
     mpi_dtype = MPI._typedict[dat.dtype.char]

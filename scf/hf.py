@@ -133,7 +133,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
 def _partition_bas(mol):
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
-    ngroups = max((mpi.pool.size*60*8)**.25, 9)
+    ngroups = max((mpi.pool.size*50*8)**.25, 9)
     blksize = max(60, min(nao / ngroups, 600))
     groups = ao2mo.outcore.balance_partition(ao_loc, blksize)
     bas_groups = [x[:2] for x in groups]
