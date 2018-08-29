@@ -55,9 +55,9 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
     loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
     loadmin = max(loadmin, len(tasks)//50//pool.size, 1)
     if rank == 0:
-        rest_tasks = list(tasks[loadmin*pool.size:])
+        rest_tasks = list(tasks[loadmin*pool.size:][::-1])
 
-    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin])
+    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin][::-1])
     def distribute_task():
         while True:
             load = comm.gather(len(tasks))
@@ -66,16 +66,16 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
                     jobs = [None] * pool.size
                     for i in range(pool.size):
                         if rest_tasks and load[i] < loadmin:
-                            jobs[i] = rest_tasks.pop(0)
+                            jobs[i] = rest_tasks.pop()
                 else:
-                    jobs = ['OUT_OF_TASK'] * pool.size
+                    jobs = ['__OUT_OF_TASKS__'] * pool.size
                 task = comm.scatter(jobs)
             else:
                 task = comm.scatter(None)
 
             if task is not None:
-                tasks.append(task)
-            if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
+                tasks.insert(0, task)
+            if tasks and tasks[0] == '__OUT_OF_TASKS__':
                 return
 
             time.sleep(interval)
@@ -85,12 +85,10 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
 
     while True:
         if tasks:
-            task = tasks.pop(0)
-            if isinstance(task, str) and task == 'OUT_OF_TASK':
+            task = tasks.pop()
+            if task == '__OUT_OF_TASKS__':
                 break
             yield task
-        else:
-            time.sleep(interval)
     tasks_handler.join()
 
 def work_stealing_partition(tasks, interval=.1):
@@ -100,41 +98,45 @@ def work_stealing_partition(tasks, interval=.1):
             time.sleep(interval)
 
             ntasks = len(tasks)
-            ntasks_all_workers = comm.allgather(ntasks)
-            if all(n <= 1 for n in ntasks_all_workers):
+            loads = comm.allgather(ntasks)
+            if all(n <= 1 for n in loads):
+                tasks.insert(0, '__OUT_OF_TASKS__')
                 break
 
-            elif any(n <= 1 for n in ntasks_all_workers):
-                ntasks_all_workers = numpy.array(ntasks_all_workers)
-                ntasks_mean = int(ntasks_all_workers.mean()+.9999)
+            elif any(n <= 1 for n in loads):
+                loads = numpy.array(loads)
+                ntasks_mean = int(loads.mean()+.9999)
                 mpi_size = pool.size
-                tasks_to_send = [tasks.pop() for i in range(ntasks - ntasks_mean)]
+                to_send = [tasks.pop() for i in range(ntasks - ntasks_mean)]
 
-                tasks_to_distriubte = comm.gather(tasks_to_send)
+                to_distriubte = comm.gather(to_send)
                 if rank == 0:
-                    tasks_to_distriubte = lib.flatten(tasks_to_distriubte)
-                    tasks_to_append = [[] for i in range(mpi_size)]
+                    to_distriubte = lib.flatten(to_distriubte)
+                    to_append = [[] for i in range(mpi_size)]
                     i = 1
-                    while tasks_to_distriubte and i < mpi_size:
-                        npop = ntasks_mean - ntasks_all_workers[i]
-                        tasks_to_append[i] = tasks_to_distriubte[:npop]
-                        tasks_to_distriubte = tasks_to_distriubte[npop:]
+                    while to_distriubte and i < mpi_size:
+                        npop = ntasks_mean - loads[i]
+                        to_append[i] = to_distriubte[:npop]
+                        to_distriubte = to_distriubte[npop:]
                         i += 1
-                    tasks_to_append[0] = tasks_to_distriubte
+                    to_append[0] = to_distriubte
                 else:
-                    tasks_to_append = None
+                    to_append = None
 
-                tasks_to_append = comm.scatter(tasks_to_append)
-                for task in tasks_to_append:
-                    tasks.append(task)
+                to_append = comm.scatter(to_append)
+                for task in to_append:
+                    tasks.insert(0, task)
 
     if pool.size > 1:
         tasks_handler = threading.Thread(target=task_daemon)
         tasks_handler.start()
 
-    while tasks:
-        task = tasks.pop()
-        yield task
+    while True:
+        if tasks:
+            task = tasks.pop()
+            if task == '__OUT_OF_TASKS__':
+                break
+            yield task
 
     if pool.size > 1:
         tasks_handler.join()
