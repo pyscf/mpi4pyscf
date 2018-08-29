@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import platform
 import time
 import numpy
 from pyscf import lib
@@ -131,7 +132,9 @@ class RKS(rks.RKS, mpi_hf.SCF):
                 'small_rho_cutoff': self.small_rho_cutoff, }
 
     def dump_flags(self):
+        mpi_info = mpi.info()
         if rank == 0:
             rks.RKS.dump_flags(self)
+            lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)
         return self
 

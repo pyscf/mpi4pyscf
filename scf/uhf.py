@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from pyscf import lib
 from pyscf.scf import uhf
 
 from mpi4pyscf.tools import mpi
@@ -15,11 +16,9 @@ class UHF(uhf.UHF, mpi_hf.SCF):
     get_k = mpi_hf.SCF.get_k
 
     def dump_flags(self):
+        mpi_info = mpi.mpi_info()
         if rank == 0:
             uhf.UHF.dump_flags(self)
-        return self
-    def sanity_check(self):
-        if rank == 0:
-            uhf.UHF.sanity_check(self)
+            lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)
         return self
 

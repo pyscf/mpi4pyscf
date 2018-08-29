@@ -72,7 +72,6 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
     bas_groups = _partition_bas(mol)
     jobs = gen_jobs(len(bas_groups), hermi)
     njobs = len(jobs)
-    logger.debug1(mf, 'njobs %d', njobs)
 
     # Each job has multiple recipes.
     n_recipes = len(jobs[0][1:])
@@ -93,6 +92,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
     # Then skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
     vhfopt._dmcondname = None
 
+    logger.debug1(mf, 'njobs %d', njobs)
     for job_id in mpi.work_stealing_partition(range(njobs)):
         group_ids = jobs[job_id][0]
         recipes = jobs[job_id][1:]
@@ -286,12 +286,10 @@ class SCF(hf.SCF):
         return self
 
     def dump_flags(self):
+        mpi_info = mpi.mpi_info()
         if rank == 0:
             hf.SCF.dump_flags(self)
-        return self
-    def sanity_check(self):
-        if rank == 0:
-            hf.SCF.sanity_check(self)
+            lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)
         return self
 
 class RHF(SCF):
