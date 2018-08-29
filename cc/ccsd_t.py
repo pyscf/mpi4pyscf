@@ -143,7 +143,7 @@ class GlobalDataHandler(object):
         def get(data_idx, tensors, loc):
             if loc == rank:
                 for k, (name, s) in zip(data_idx, tensors):
-                    data[k] = numpy.asarray(self._get_tensor(name, s), order='C')
+                    data[k] = ccsd._cp(self._get_tensor(name, s), order='C')
             else:
                 comm.send((tensors, rank), dest=loc, tag=INQUIRY)
                 for k in data_idx:

@@ -103,7 +103,7 @@ def update_amps(mycc, t1, t2, eris):
 
     fswap = lib.H5TmpFile()
     wVooV = numpy.zeros((nvir_seg,nocc,nocc,nvir))
-    eris_voov = numpy.asarray(eris.ovvo).transpose(1,0,3,2)
+    eris_voov = _cp(eris.ovvo).transpose(1,0,3,2)
     tau  = t2T * .5
     tau += numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
     for task_id, tau, p0, p1 in _rotate_vir_block(tau):
@@ -265,7 +265,7 @@ def update_amps(mycc, t1, t2, eris):
         eris_VOov = wVOov = wVooV = update_wVooV = None
         time1 = log.timer_debug1('voov [%d:%d]'%(p0, p1), *time1)
 
-    wVooV = numpy.asarray(fswap['wVooV1'])
+    wVooV = _cp(fswap['wVooV1'])
     for task_id, wVooV, p0, p1 in _rotate_vir_block(wVooV):
         tmp = lib.einsum('ackj,ckib->ajbi', t2T[:,p0:p1], wVooV)
         t2Tnew += tmp.transpose(0,2,3,1)
@@ -273,7 +273,7 @@ def update_amps(mycc, t1, t2, eris):
     wVooV = tmp = None
     time1 = log.timer_debug1('contracting wVooV', *time1)
 
-    wVOov = numpy.asarray(fswap['wVOov1'])
+    wVOov = _cp(fswap['wVOov1'])
     theta  = t2T * 2
     theta -= t2T.transpose(0,1,3,2)
     for task_id, wVOov, p0, p1 in _rotate_vir_block(wVOov):
@@ -288,13 +288,13 @@ def update_amps(mycc, t1, t2, eris):
 
     theta = t2T.transpose(0,1,3,2) * 2 - t2T
     t1T_priv[vloc0:vloc1] += numpy.einsum('jb,abji->ai', fov, theta)
-    ovoo = numpy.asarray(eris.ovoo)
+    ovoo = _cp(eris.ovoo)
     for task_id, ovoo, p0, p1 in _rotate_vir_block(ovoo):
         t1T_priv[vloc0:vloc1] -= lib.einsum('jbki,abjk->ai', ovoo, theta[:,p0:p1])
     theta = ovoo = None
 
     woooo = mpi.allreduce(woooo)
-    woooo += numpy.asarray(eris.oooo).transpose(0,2,1,3)
+    woooo += _cp(eris.oooo).transpose(0,2,1,3)
     tau = t2T + numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
     t2Tnew += .5 * lib.einsum('abkl,ijkl->abij', tau, woooo)
     tau = woooo = None
@@ -995,6 +995,20 @@ def _make_eris_outcore(mycc, mo_coeff=None):
 
 def _sync_(mycc):
     return mycc.unpack_(comm.bcast(mycc.pack()))
+
+def _cp(a, order=None):
+    # h5py-2.8 adds an explict LE/BE label to the dataset. When data was
+    # loaded with h5py __getitem__ function, '<' or '>' was attached to the
+    # dtype of the data, e.g. '<d'. The dtype string can be verified by
+    # calling "memoryview(a).format".  mpi4py only supports the native byte
+    # order.  If h5py data was directly passed to mpi4py p2p functions,
+    # KeyError will be raised.  dtype=a.dtype.char below converts the LE/BE
+    # dtype to the native dtype.
+    if a.dtype.byteorder != '=':
+        a = numpy.asarray(a, dtype=a.dtype.char, order=order)
+    else:
+        a = numpy.asarray(a, order=order)
+    return a
 
 
 if __name__ == '__main__':
