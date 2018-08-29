@@ -28,6 +28,10 @@ def get_jk(mol_or_mf, dm, hermi=1):
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
     vj, vk = _eval_jk(mf, [dm]*2, hermi, _jk_jobs_s8)
+    if rank == 0:
+        for i in range(vj.shape[0]):
+            for j in range(vj.shape[1]):
+                lib.hermi_triu(vj[i,j], 1, inplace=True)
     return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
 @mpi.parallel_call
@@ -37,20 +41,12 @@ def get_j(mol_or_mf, dm, hermi=1):
     else:
         mf = mol_or_mf
 
-    if isinstance(dm, numpy.ndarray) and dm.ndim == 2:
-        hermi = 1
-        nao = dm.shape[0]
-        dm = dm + dm.T
-        dm[numpy.diag_indices(nao)] *= .5
-        dm[numpy.tril_indices(nao, -1)] = 0
-    else:
-        hermi = 0
-
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
+        hermi = 1
         vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
     return vj.reshape(dm.shape)
 
@@ -149,10 +145,7 @@ def _partition_bas(mol):
 
 def _vj_jobs_s8(ngroups, hermi=1):
     jobs = []
-    if hermi:
-        recipe = ((1,0,2,3), (3,2,0,1))
-    else:
-        recipe = ((1,0,2,3), (0,1,2,3), (3,2,0,1), (2,3,0,1))
+    recipe = ((1,0,2,3), (0,1,2,3), (3,2,0,1), (2,3,0,1))
     for ip in range(ngroups):
         for jp in range(ip):
             for kp in range(ip):
@@ -160,10 +153,7 @@ def _vj_jobs_s8(ngroups, hermi=1):
                     jobs.append(((ip, jp, kp, lp), recipe))
 
     # ip > jp, ip > kp, kp == lp
-    if hermi:
-        recipe = ((1,0,2,3), (2,3,0,1))
-    else:
-        recipe = ((1,0,2,3), (0,1,2,3), (2,3,0,1))
+    recipe = ((1,0,2,3), (0,1,2,3), (2,3,0,1))
     for ip in range(ngroups):
         for jp in range(ip):
             for kp in range(ip):
@@ -171,10 +161,7 @@ def _vj_jobs_s8(ngroups, hermi=1):
                 jobs.append(((ip, jp, kp, lp), recipe))
 
     # ip == kp and ip > jp and kp > lp
-    if hermi:
-        recipe = ((1,0,2,3),)
-    else:
-        recipe = ((1,0,2,3), (0,1,2,3))
+    recipe = ((1,0,2,3), (0,1,2,3))
     for ip in range(ngroups):
         for jp in range(ip):
             kp = ip
@@ -182,10 +169,7 @@ def _vj_jobs_s8(ngroups, hermi=1):
                 jobs.append(((ip, jp, kp, lp), recipe))
 
     # ip == jp and ip >= kp
-    if hermi:
-        recipe = ((1,0,2,3), (3,2,1,0))
-    else:
-        recipe = ((1,0,2,3), (2,3,1,0), (3,2,1,0))
+    recipe = ((1,0,2,3), (2,3,1,0), (3,2,1,0))
     for ip in range(ngroups):
         jp = ip
         for kp in range(ip+1):

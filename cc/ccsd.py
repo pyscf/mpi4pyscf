@@ -508,7 +508,7 @@ if ASYNC:
                     handler.start()
             yield task, buf
 else:
-    def _rotate_tensor_block1(buf):
+    def _rotate_tensor_block(buf):
         ntasks = mpi.pool.size
         tasks = list(range(ntasks))
         tasks = tasks[rank:] + tasks[:rank]
