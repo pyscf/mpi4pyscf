@@ -30,8 +30,7 @@ def get_jk(mol_or_mf, dm, hermi=1):
     vj, vk = _eval_jk(mf, [dm]*2, hermi, _jk_jobs_s8)
     if rank == 0:
         for i in range(vj.shape[0]):
-            for j in range(vj.shape[1]):
-                lib.hermi_triu(vj[i,j], 1, inplace=True)
+            lib.hermi_triu(vj[i], 1, inplace=True)
     return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
 @mpi.parallel_call
