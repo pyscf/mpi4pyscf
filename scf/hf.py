@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import time
 import numpy
 from pyscf import lib
 from pyscf import gto
@@ -65,6 +66,7 @@ def get_k(mol_or_mf, dm, hermi=1):
     return vk.reshape(dm.shape)
 
 def _eval_jk(mf, dm, hermi, gen_jobs):
+    cpu0 = (time.clock(), time.time())
     mol = mf.mol
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
@@ -72,6 +74,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
     bas_groups = _partition_bas(mol)
     jobs = gen_jobs(len(bas_groups), hermi)
     njobs = len(jobs)
+    logger.debug1(mf, 'njobs %d', njobs)
 
     # Each job has multiple recipes.
     n_recipes = len(jobs[0][1:])
@@ -92,7 +95,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
     # Then skip the "set_dm" initialization in function jk.get_jk/direct_bindm.
     vhfopt._dmcondname = None
 
-    logger.debug1(mf, 'njobs %d', njobs)
+    logger.timer_debug1(mf, 'get_jk initialization', *cpu0)
     for job_id in mpi.work_stealing_partition(range(njobs)):
         group_ids = jobs[job_id][0]
         recipes = jobs[job_id][1:]
@@ -128,6 +131,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
         for i in range(n_recipes):
             for j in range(n_dm):
                 lib.hermi_triu(vk[i,j], hermi, inplace=True)
+    logger.timer(mf, 'get_jk', *cpu0)
     return vk
 
 def _partition_bas(mol):
