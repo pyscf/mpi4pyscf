@@ -23,7 +23,7 @@ rank = mpi.rank
 BLKMIN = 4
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[3], skip_kwargs=['eris'])
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=False,
            verbose=logger.NOTE):
     _sync_(mp)

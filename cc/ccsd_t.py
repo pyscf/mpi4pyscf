@@ -20,8 +20,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-@mpi.parallel_call
-def kernel(mycc):
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
+def kernel(mycc, eris=None):
     cpu0 = (time.clock(), time.time())
     ccsd._sync_(mycc)
     log = logger.new_logger(mycc)

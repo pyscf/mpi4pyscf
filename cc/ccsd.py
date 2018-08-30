@@ -1,5 +1,13 @@
 #!/usr/bin/env python
 
+'''
+MPI parallelized RCCSD.
+
+Note this code only works for large system. If system is not big enough and
+many processors are used, it may crash due to manipulating 0-length array in
+some processors.
+'''
+
 import os
 import time
 import ctypes
@@ -22,7 +30,7 @@ BLKMIN = getattr(__config__, 'cc_ccsd_blkmin', 4)
 MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
 def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
            tolnormt=1e-6, verbose=None):
     log = logger.new_logger(mycc, verbose)
@@ -568,7 +576,7 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, verbose=None):
             sh_ranges = ao2mo.outcore.balance_partition(ao_loc, blksize, sh0, sh1)
             sh_ranges_tasks.append(sh_ranges)
 
-        blksize = max(max(x[2] for x in sh_ranges)
+        blksize = max(max(x[2] for x in sh_ranges) if sh_ranges else 0
                       for sh_ranges in sh_ranges_tasks)
         eribuf = numpy.empty((blksize,blksize,nvirb,nvirb))
         loadbuf = numpy.empty((blksize,blksize,nvirb,nvirb))
@@ -644,7 +652,7 @@ def vector_to_amplitudes(vector, nmo, nocc):
     return t1T.T, t2T.transpose(2,3,0,1)
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
 def init_amps(mycc, eris=None):
     eris = getattr(mycc, '_eris', None)
     if eris is None:
@@ -675,7 +683,7 @@ def init_amps(mycc, eris=None):
     logger.timer(mycc, 'init mp2', *time0)
     return mycc.emp2, t1T.T, t2T.transpose(2,3,0,1)
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[3], skip_kwargs=['eris'])
 def energy(mycc, t1=None, t2=None, eris=None):
     '''CCSD correlation energy'''
     if t1 is None: t1 = mycc.t1
