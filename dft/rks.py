@@ -14,12 +14,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1, 2, 3, 4], skip_kwargs=['dm_last', 'vhf_last'])
 def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
-    if mol is not None:
-        assert(mol is mf.mol)
-    if dm is None: dm = mf.make_rdm1()
-
     t0 = (time.clock(), time.time())
     mf.unpack_(comm.bcast(mf.pack()))
     mol = mf.mol
@@ -30,6 +26,19 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
     if abs(omega) > 1e-10:  # For range separated Coulomb operator
         raise NotImplementedError
+
+    # Broadcast the large input arrays here.
+    if any(comm.allgather(isinstance(dm, str) and dm == 'SKIPPED_ARG')):
+        if comm.bcast(dm is None):
+            dm = mf.make_rdm1()
+        else:
+            dm = mpi.bcast_tagged_array(dm)
+
+    if any(comm.allgather(isinstance(dm_last, str) and dm_last == 'SKIPPED_ARG')):
+        dm_last = mpi.bcast_tagged_array(dm_last)
+
+    if any(comm.allgather(isinstance(vhf_last, str) and vhf_last == 'SKIPPED_ARG')):
+        vhf_last = mpi.bcast_tagged_array(vhf_last)
 
     ground_state = (isinstance(dm, numpy.ndarray) and dm.ndim == 2)
 

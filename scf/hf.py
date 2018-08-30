@@ -15,7 +15,7 @@ from mpi4pyscf.tools import mpi
 comm = mpi.comm
 rank = mpi.rank
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1])
 def get_jk(mol_or_mf, dm, hermi=1):
     '''MPI version of scf.hf.get_jk function'''
     #vj = get_j(mol_or_mf, dm, hermi)
@@ -24,6 +24,10 @@ def get_jk(mol_or_mf, dm, hermi=1):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
         mf = mol_or_mf
+
+    # dm may be too big for mpi4py library to serialize. Broadcast dm here.
+    if any(comm.allgather(isinstance(dm, str) and dm == 'SKIPPED_ARG')):
+        dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
@@ -34,12 +38,16 @@ def get_jk(mol_or_mf, dm, hermi=1):
             lib.hermi_triu(vj[i], 1, inplace=True)
     return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1])
 def get_j(mol_or_mf, dm, hermi=1):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
         mf = mol_or_mf
+
+    # dm may be too big for mpi4py library to serialize. Broadcast dm here.
+    if any(comm.allgather(isinstance(dm, str) and dm == 'SKIPPED_ARG')):
+        dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
@@ -50,12 +58,16 @@ def get_j(mol_or_mf, dm, hermi=1):
         vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
     return vj.reshape(dm.shape)
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1])
 def get_k(mol_or_mf, dm, hermi=1):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
         mf = mol_or_mf
+
+    # dm may be too big for mpi4py library to serialize. Broadcast dm here.
+    if any(comm.allgather(isinstance(dm, str) and dm == 'SKIPPED_ARG')):
+        dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
@@ -138,7 +150,7 @@ def _partition_bas(mol):
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
     ngroups = max((mpi.pool.size*50*8)**.25, 9)
-    blksize = max(60, min(nao / ngroups, 600))
+    blksize = max(60, min(nao / ngroups, 800))
     groups = ao2mo.outcore.balance_partition(ao_loc, blksize)
     bas_groups = [x[:2] for x in groups]
     logger.debug1(mol, 'mpi.size %d, blksize = %d, ngroups = %d',
