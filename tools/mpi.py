@@ -725,11 +725,11 @@ def prange(start, stop, step):
         i1 = min(stop, i0 + step)
         yield i0, i1
 
-def mpi_info():
-    def platform_info():
+def platform_info():
+    def info():
         import platform
         from mpi4pyscf.tools import mpi
         info = mpi.rank, platform.node(), platform.os.getpid()
         return mpi.pool.comm.gather(info)
-    return pool.apply(platform_info, (), ())
+    return pool.apply(info, (), ())
 

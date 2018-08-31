@@ -32,7 +32,7 @@ def get_jk(mol_or_mf, dm, hermi=1):
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
-    vj, vk = _eval_jk(mf, [dm]*2, hermi, _jk_jobs_s8)
+    vj, vk = _eval_jk(mf, dm, hermi, _jk_jobs_s8)
     if rank == 0:
         for i in range(vj.shape[0]):
             lib.hermi_triu(vj[i], 1, inplace=True)
@@ -90,9 +90,9 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
 
     # Each job has multiple recipes.
     n_recipes = len(jobs[0][1:])
-    dm = numpy.stack(dm).reshape(n_recipes,-1,nao,nao)
-    vk = numpy.zeros_like(dm)
-    n_dm = dm.shape[1]
+    dm = numpy.asarray(dm).reshape(-1,nao,nao)
+    n_dm = dm.shape[0]
+    vk = numpy.zeros((n_recipes,n_dm,nao,nao))
 
     if mf.opt is None:
         vhfopt = mf.init_direct_scf(mol)
@@ -121,7 +121,7 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
                 for i, rec in enumerate(recipe):
                     p0, p1 = loc[rec[0]]
                     q0, q1 = loc[rec[1]]
-                    dm_blks.append(dm[ir,i_dm,p0:p1,q0:q1])
+                    dm_blks.append(dm[i_dm,p0:p1,q0:q1])
         scripts = ['ijkl,%s%s->%s%s' % tuple(['ijkl'[x] for x in rec])
                    for recipe in recipes
                        for rec in recipe] * n_dm
@@ -302,7 +302,7 @@ class SCF(hf.SCF):
         return self
 
     def dump_flags(self):
-        mpi_info = mpi.mpi_info()
+        mpi_info = mpi.platform_info()
         if rank == 0:
             hf.SCF.dump_flags(self)
             lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)

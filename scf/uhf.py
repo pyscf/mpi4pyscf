@@ -16,7 +16,7 @@ class UHF(uhf.UHF, mpi_hf.SCF):
     get_k = mpi_hf.SCF.get_k
 
     def dump_flags(self):
-        mpi_info = mpi.mpi_info()
+        mpi_info = mpi.platform_info()
         if rank == 0:
             uhf.UHF.dump_flags(self)
             lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)

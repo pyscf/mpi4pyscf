@@ -5,7 +5,6 @@
 
 import os
 import time
-import platform
 import ctypes
 import tempfile
 import numpy
@@ -41,8 +40,7 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
-    info = rank, platform.node(), platform.os.getpid()
-    log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
+    log.debug('MPI info (rank, host, pid)  %s', mpi.platform_info())
 
     t1 = (time.clock(), time.time())
     if mydf.kpts_band is not None:
