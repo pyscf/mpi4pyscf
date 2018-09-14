@@ -435,6 +435,7 @@ def del_registry(reg_procs):
     return []
 
 def _init_on_workers(module, name, args, kwargs):
+    import importlib
     from pyscf.gto import mole
     from pyscf.pbc.gto import cell
     from mpi4pyscf.tools import mpi
@@ -532,6 +533,7 @@ else:
         return cls
 
 def _distribute_call(module, name, reg_procs, args, kwargs):
+    import importlib
     dev = reg_procs
     if module is None:  # Master process
         fn = name
@@ -587,6 +589,7 @@ else:
         return client_yield
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
+    import importlib
     from mpi4pyscf.tools import mpi
     if module is None:  # Master process
         fn = name
