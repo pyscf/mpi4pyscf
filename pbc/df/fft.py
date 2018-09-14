@@ -86,10 +86,12 @@ def get_pp(mydf, kpts=None):
     vpplocG = pseudo.get_vlocG(cell, Gv)
     vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
     ngrids = len(vpplocG)
+    nao = cell.nao_nr()
+    nkpts = len(kpts_lst)
 
     # vpploc evaluated in real-space
     vpplocR = tools.ifft(vpplocG, mesh).real
-    vpp = [0] * len(kpts_lst)
+    vpp = numpy.zeros((nkpts,nao,nao), dtype=dtype)
     for ao_ks_etc, p0, p1 in mydf.mpi_aoR_loop(mydf.grids, kpts_lst):
         ao_ks = ao_ks_etc[0]
         for k, ao in enumerate(ao_ks):
