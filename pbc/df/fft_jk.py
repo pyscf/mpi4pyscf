@@ -154,7 +154,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
                 for i, dm in enumerate(dms):
                     occ = mo_occ[i][k2]
                     mo_scaled = mo_coeff[i][k2][:,occ>0] * numpy.sqrt(occ[occ>0])
-                    ao_dms.append(lib.dot(mo_scaled.T, ao2T))
+                    ao_dms.append(lib.dot(mo_scaled.T, ao2T).conj())
             ao_dms_buf[k2] = ao_dms
         else:
             ao_dms = ao_dms_buf[k2]
