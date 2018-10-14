@@ -83,8 +83,12 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
     ngrids = coords.shape[0]
 
     if hasattr(dm_kpts, 'mo_coeff'):
-        mo_coeff = [dm_kpts.mo_coeff]
-        mo_occ   = [dm_kpts.mo_occ  ]
+        if dm_kpts.ndim == 3:  # KRHF
+            mo_coeff = [dm_kpts.mo_coeff]
+            mo_occ   = [dm_kpts.mo_occ  ]
+        else:  # KUHF
+            mo_coeff = dm_kpts.mo_coeff
+            mo_occ   = dm_kpts.mo_occ
     elif hasattr(dm_kpts[0], 'mo_coeff'):
         mo_coeff = [dm.mo_coeff for dm in dm_kpts]
         mo_occ   = [dm.mo_occ   for dm in dm_kpts]
