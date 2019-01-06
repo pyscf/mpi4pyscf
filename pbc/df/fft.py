@@ -24,7 +24,7 @@ from pyscf.pbc.df import fft
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import fft_jk
+from mpi4pyscf.pbc.df import fft_jk as mpi_fft_jk
 
 comm = mpi.comm
 rank = mpi.rank
@@ -80,13 +80,11 @@ def get_pp(mydf, kpts=None):
     else:
         dtype = numpy.complex128
 
-    low_dim_ft_type = mydf.low_dim_ft_type
     mesh = mydf.mesh
     SI = cell.get_SI()
     Gv = cell.get_Gv(mesh)
-    vpplocG = pseudo.get_vlocG(cell, Gv, low_dim_ft_type)
+    vpplocG = pseudo.get_vlocG(cell, Gv)
     vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
-    vpplocG[0] = numpy.sum(pseudo.get_alphas(cell, low_dim_ft_type))
     ngrids = len(vpplocG)
     nao = cell.nao_nr()
     nkpts = len(kpts_lst)
@@ -179,7 +177,8 @@ class FFTDF(fft.FFTDF):
     '''Density expansion on plane waves
     '''
     def __init__(self, cell, kpts=numpy.zeros((1,3))):
-        if cell.dimension <= 2:
+        if (cell.dimension < 2 or
+            (cell.dimension == 2 and cell.low_dim_ft_type == 'inf_vacuum')):
             raise RuntimeError('MPI-FFTDF module does not support 0D/1D/2D low-dimension '
                                'PBC system')
         fft.FFTDF.__init__(self, cell, kpts)
@@ -243,14 +242,14 @@ class FFTDF(fft.FFTDF):
         vj = vk = None
         if kpts.shape == (3,):
             if with_k:
-                vk = fft_jk.get_k(self, dm, hermi, kpts, kpts_band, exxdiv)
+                vk = mpi_fft_jk.get_k(self, dm, hermi, kpts, kpts_band, exxdiv)
             if with_j:
-                vj = fft_jk.get_j(self, dm, hermi, kpts, kpts_band)
+                vj = mpi_fft_jk.get_j(self, dm, hermi, kpts, kpts_band)
         else:
             if with_k:
-                vk = fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+                vk = mpi_fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
             if with_j:
-                vj = fft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+                vj = mpi_fft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
 

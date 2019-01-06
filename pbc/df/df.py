@@ -3,8 +3,8 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
+import os
 import time
-import platform
 import ctypes
 import tempfile
 import numpy
@@ -23,9 +23,9 @@ from pyscf.pbc import gto as pbcgto
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
-from mpi4pyscf.pbc.df import df_jk
-from mpi4pyscf.pbc.df import df_ao2mo
-from mpi4pyscf.pbc.df import aft
+from mpi4pyscf.pbc.df import df_jk as mpi_df_jk
+from mpi4pyscf.pbc.df import df_ao2mo as mpi_df_ao2mo
+from mpi4pyscf.pbc.df import aft as mpi_aft
 
 comm = mpi.comm
 rank = mpi.rank
@@ -40,8 +40,7 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
     mydf = _sync_mydf(mydf)
     cell = mydf.cell
     log = logger.Logger(mydf.stdout, mydf.verbose)
-    info = rank, platform.node(), platform.os.getpid()
-    log.debug('MPI info (rank, host, pid)  %s', comm.gather(info))
+    log.debug('MPI info (rank, host, pid)  %s', mpi.platform_info())
 
     t1 = (time.clock(), time.time())
     if mydf.kpts_band is not None:
@@ -112,39 +111,32 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     # j2c ~ (-kpt_ji | kpt_ji)
     j2c = fused_cell.pbc_intor('int2c2e', hermi=1, kpts=uniq_kpts)
     j2ctags = []
-    nauxs = []
     t1 = log.timer_debug1('2c2e', *t1)
 
-    if h5py.is_hdf5(cderi_file):
-        feri = h5py.File(cderi_file)
-    else:
-        feri = h5py.File(cderi_file, 'w')
-
-    if cell.dimension == 1 or cell.dimension == 2:
-        plain_ints = df._gaussian_int(fused_cell)
+    swapfile = tempfile.NamedTemporaryFile(dir=os.path.dirname(cderi_file))
+    fswap = lib.H5TmpFile(swapfile.name)
+    # Unlink swapfile to avoid trash
+    swapfile = None
 
     mem_now = max(comm.allgather(lib.current_memory()[0]))
     max_memory = max(2000, mydf.max_memory - mem_now)
     blksize = max(2048, int(max_memory*.5e6/16/fused_cell.nao_nr()))
     log.debug2('max_memory %s (MB)  blocksize %s', max_memory, blksize)
     for k, kpt in enumerate(uniq_kpts):
-        coulG = numpy.sqrt(mydf.weighted_coulG(kpt, False, mesh))
+        coulG = mydf.weighted_coulG(kpt, False, mesh)
         j2c_k = numpy.zeros_like(j2c[k])
         for p0, p1 in mydf.prange(0, ngrids, blksize):
-            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt)
-            if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
-                G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv[p0:p1])
-                aoaux[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, plain_ints)
-            aoaux = aoaux.T
-            LkR = aoaux.real * coulG[p0:p1]
-            LkI = aoaux.imag * coulG[p0:p1]
+            aoaux = ft_ao.ft_ao(fused_cell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
+            LkR = numpy.asarray(aoaux.real, order='C')
+            LkI = numpy.asarray(aoaux.imag, order='C')
             aoaux = None
 
             if is_zero(kpt):  # kpti == kptj
-                j2c_k[naux:] += lib.ddot(LkR[naux:], LkR.T)
-                j2c_k[naux:] += lib.ddot(LkI[naux:], LkI.T)
+                j2c_k[naux:] += lib.ddot(LkR[naux:]*coulG[p0:p1], LkR.T)
+                j2c_k[naux:] += lib.ddot(LkI[naux:]*coulG[p0:p1], LkI.T)
             else:
-                j2cR, j2cI = zdotCN(LkR[naux:], LkI[naux:], LkR.T, LkI.T)
+                j2cR, j2cI = zdotCN(LkR[naux:]*coulG[p0:p1],
+                                    LkI[naux:]*coulG[p0:p1], LkR.T, LkI.T)
                 j2c_k[naux:] += j2cR + j2cI * 1j
             kLR = kLI = None
 
@@ -152,9 +144,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j2c[k] -= mpi.allreduce(j2c_k)
         j2c[k] = fuse(fuse(j2c[k]).T).T
         try:
-            feri['j2c/%d'%k] = scipy.linalg.cholesky(j2c[k], lower=True)
+            fswap['j2c/%d'%k] = scipy.linalg.cholesky(j2c[k], lower=True)
             j2ctags.append('CD')
-            nauxs.append(naux)
         except scipy.linalg.LinAlgError as e:
             #msg =('===================================\n'
             #      'J-metric not positive definite.\n'
@@ -166,11 +157,15 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             log.debug2('metric linear dependency for kpt %s', k)
             log.debug2('cond = %.4g, drop %d bfns',
                        w[0]/w[-1], numpy.count_nonzero(w<mydf.linear_dep_threshold))
-            v = v[:,w>mydf.linear_dep_threshold].T.conj()
-            v /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
-            feri['j2c/%d'%k] = v
+            v1 = v[:,w>mydf.linear_dep_threshold].T.conj()
+            v1 /= numpy.sqrt(w[w>mydf.linear_dep_threshold]).reshape(-1,1)
+            fswap['j2c/%d'%k] = v1
+            if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
+                idx = numpy.where(w < -mydf.linear_dep_threshold)[0]
+                if len(idx) > 0:
+                    fswap['j2c-/%d'%k] = (v[:,idx]/numpy.sqrt(-w[idx])).conj().T
+            w = v = v1 = None
             j2ctags.append('eig')
-            nauxs.append(v.shape[0])
     j2c = coulG = None
 
     aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
@@ -204,11 +199,8 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         idxb = (idxb[0] * nao + idxb[1]).astype('i')
     aux_loc = fused_cell.ao_loc_nr('ssc' in 'int3c2e')
 
-    def gen_int3c(auxcell, job_id, ish0, ish1):
+    def gen_int3c(job_id, ish0, ish1):
         dataname = 'j3c-chunks/%d' % job_id
-        if dataname in feri:
-            del(feri[dataname])
-
         i0 = ao_loc[ish0]
         i1 = ao_loc[ish1]
         dii = i1*(i1+1)//2 - i0*(i0+1)//2
@@ -231,9 +223,9 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             else:
                 shape = (naux, dij)
             if gamma_point(kptij):
-                feri.create_dataset(key, shape, 'f8')
+                fswap.create_dataset(key, shape, 'f8')
             else:
-                feri.create_dataset(key, shape, 'c16')
+                fswap.create_dataset(key, shape, 'c16')
 
         naux0 = 0
         for istep, auxrange in enumerate(auxranges):
@@ -244,7 +236,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             mat = int3c(sub_slice, mat)
 
             for k, kptij in enumerate(kptij_lst):
-                h5dat = feri['%s/%d'%(dataname,k)]
+                h5dat = fswap['%s/%d'%(dataname,k)]
                 v = lib.transpose(mat[k], out=buf1)
                 if not j_only and aosym_s2[k]:
                     idy = idxb[i0*(i0+1)//2:i1*(i1+1)//2] - i0 * nao
@@ -262,17 +254,23 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         adapted_kptjs = kptjs[adapted_ji_idx]
         nkptj = len(adapted_kptjs)
 
-        j2c = numpy.asarray(feri['j2c/%d'%uniq_kptji_id])
+        j2c = numpy.asarray(fswap['j2c/%d'%uniq_kptji_id])
         j2ctag = j2ctags[uniq_kptji_id]
         naux0 = j2c.shape[0]
+        if ('j2c-/%d' % uniq_kptji_id) in fswap:
+            j2c_negative = numpy.asarray(fswap['j2c-/%d'%uniq_kptji_id])
+        else:
+            j2c_negative = None
 
         if is_zero(kpt):
             aosym = 's2'
-            vbar = mydf.auxbar(fused_cell)
-            ovlp = cell.pbc_intor('int1e_ovlp', hermi=1, kpts=adapted_kptjs)
-            ovlp = [lib.pack_tril(s) for s in ovlp]
         else:
             aosym = 's1'
+
+        if aosym == 's2' and cell.dimension == 3:
+            vbar = fuse(mydf.auxbar(fused_cell))
+            ovlp = cell.pbc_intor('int1e_ovlp', hermi=1, kpts=adapted_kptjs)
+            ovlp = [lib.pack_tril(s) for s in ovlp]
 
         j3cR = [None] * nkptj
         j3cI = [None] * nkptj
@@ -280,11 +278,10 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         i1 = ao_loc[sh1]
         for k, idx in enumerate(adapted_ji_idx):
             key = 'j3c-chunks/%d/%d' % (job_id, idx)
-            v = numpy.asarray(feri[key])
-            if is_zero(kpt) and cell.dimension == 3:
-                for i, c in enumerate(vbar):
-                    if c != 0:
-                        v[i] -= c * ovlp[k][i0*(i0+1)//2:i1*(i1+1)//2].ravel()
+            v = numpy.asarray(fswap[key])
+            if aosym == 's2' and cell.dimension == 3:
+                for i in numpy.where(vbar != 0)[0]:
+                    v[i] -= vbar[i] * ovlp[k][i0*(i0+1)//2:i1*(i1+1)//2].ravel()
             j3cR[k] = numpy.asarray(v.real, order='C')
             if v.dtype == numpy.complex128:
                 j3cI[k] = numpy.asarray(v.imag, order='C')
@@ -315,23 +312,6 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
-
-            if (cell.dimension == 1 or cell.dimension == 2) and is_zero(kpt):
-                G0idx, SI_on_z = pbcgto.cell._SI_for_uniform_model_charge(cell, Gv[p0:p1])
-                if SI_on_z.size > 0:
-                    for k, aoao in enumerate(dat):
-                        aoao[G0idx] -= numpy.einsum('g,i->gi', SI_on_z, ovlp[k])
-                        aux = fuse(ft_ao.ft_ao(fused_cell, Gv[p0:p1][G0idx]).T)
-                        vG_mod = numpy.einsum('ig,g,g->i', aux.conj(),
-                                              wcoulG[p0:p1][G0idx], SI_on_z)
-                        if gamma_point(adapted_kptjs[k]):
-                            j3cR[k][:naux] -= vG_mod[:,None].real * ovlp[k]
-                        else:
-                            tmp = vG_mod[:,None] * ovlp[k]
-                            j3cR[k][:naux] -= tmp.real
-                            j3cI[k][:naux] -= tmp.imag
-                        tmp = aux = vG_mod
-
             nG = p1 - p0
             for k, ji in enumerate(adapted_ji_idx):
                 aoao = dat[k].reshape(nG,ncol)
@@ -354,15 +334,32 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 v = fuse(j3cR[k] + j3cI[k] * 1j)
             if j2ctag == 'CD':
                 v = scipy.linalg.solve_triangular(j2c, v, lower=True, overwrite_b=True)
+                fswap['j3c-chunks/%d/%d'%(job_id,idx)][:naux0] = v
             else:
-                v = lib.dot(j2c, v)
-            feri['j3c-chunks/%d/%d'%(job_id,idx)][:naux0] = v
+                fswap['j3c-chunks/%d/%d'%(job_id,idx)][:naux0] = lib.dot(j2c, v)
+
+            # low-dimension systems
+            if j2c_negative is not None:
+                fswap['j3c-/%d/%d'%(job_id,idx)] = lib.dot(j2c_negative, v)
+
+    _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log)
+
+def _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log):
+    t1 = (time.clock(), time.time())
+    cell = mydf.cell
+    ao_loc = cell.ao_loc_nr()
+    nao = ao_loc[-1]
+    kptis = kptij_lst[:,0]
+    kptjs = kptij_lst[:,1]
+    kpt_ji = kptjs - kptis
+    uniq_kpts, uniq_index, uniq_inverse = unique(kpt_ji)
+    aosym_s2 = numpy.einsum('ix->i', abs(kptis-kptjs)) < 1e-9
 
     t2 = t1
     j3c_workers = numpy.zeros(len(j3c_jobs), dtype=int)
     #for job_id, ish0, ish1 in mpi.work_share_partition(j3c_jobs):
     for job_id, ish0, ish1 in mpi.work_stealing_partition(j3c_jobs):
-        gen_int3c(fused_cell, job_id, ish0, ish1)
+        gen_int3c(job_id, ish0, ish1)
         t2 = log.alltimer_debug2('int j3c %d' % job_id, *t2)
 
         for k, kpt in enumerate(uniq_kpts):
@@ -372,8 +369,26 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         j3c_workers[job_id] = rank
     j3c_workers = mpi.allreduce(j3c_workers)
     log.debug2('j3c_workers %s', j3c_workers)
-    fuse = gen_int3c = ft_fuse = None
     t1 = log.timer_debug1('int3c and fuse', *t1)
+
+    # Pass 2
+    # Transpose 3-index tensor and save data in cderi_file
+    feri = h5py.File(cderi_file, 'w')
+    nauxs = [fswap['j2c/%d'%k].shape[0] for k, kpt in enumerate(uniq_kpts)]
+    segsize = (max(nauxs)+mpi.pool.size-1) // mpi.pool.size
+    naux0 = rank * segsize
+    for k, kptij in enumerate(kptij_lst):
+        naux1 = min(nauxs[uniq_inverse[k]], naux0+segsize)
+        nrow = max(0, naux1-naux0)
+        if gamma_point(kptij):
+            dtype = 'f8'
+        else:
+            dtype = 'c16'
+        if aosym_s2[k]:
+            nao_pair = nao * (nao+1) // 2
+        else:
+            nao_pair = nao * nao
+        feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
 
     def get_segs_loc(aosym):
         off0 = numpy.asarray([ao_loc[i0] for x,i0,i1 in j3c_jobs])
@@ -392,33 +407,15 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     segs_loc_s1 = get_segs_loc(False)
     segs_loc_s2 = get_segs_loc(True)
 
-    if 'j3c' in feri: del(feri['j3c'])
-    segsize = (max(nauxs)+mpi.pool.size-1) // mpi.pool.size
-    naux0 = rank * segsize
-    for k, kptij in enumerate(kptij_lst):
-        naux1 = min(nauxs[uniq_inverse[k]], naux0+segsize)
-        nrow = max(0, naux1-naux0)
-        if gamma_point(kptij):
-            dtype = 'f8'
-        else:
-            dtype = 'c16'
-        if aosym_s2[k]:
-            nao_pair = nao * (nao+1) // 2
-        else:
-            nao_pair = nao * nao
-        feri.create_dataset('j3c/%d'%k, (nrow,nao_pair), dtype, maxshape=(None,nao_pair))
-
+    job_ids = numpy.where(rank == j3c_workers)[0]
     def load(k, p0, p1):
         naux1 = nauxs[uniq_inverse[k]]
         slices = [(min(i*segsize+p0,naux1), min(i*segsize+p1,naux1))
                   for i in range(mpi.pool.size)]
         segs = []
         for p0, p1 in slices:
-            val = []
-            for job_id, worker in enumerate(j3c_workers):
-                if rank == worker:
-                    key = 'j3c-chunks/%d/%d' % (job_id, k)
-                    val.append(feri[key][p0:p1].ravel())
+            val = [fswap['j3c-chunks/%d/%d' % (job, k)][p0:p1].ravel()
+                   for job in job_ids]
             if val:
                 segs.append(numpy.hstack(val))
             else:
@@ -460,7 +457,27 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
                 t2 = log.timer_debug1('assemble k=%d %d:%d (in %d)' %
                                       (k, p0, p1, segsize), *t2)
 
-    if 'j3c-chunks' in feri: del(feri['j3c-chunks'])
+    if 'j2c-' in fswap:
+        j2c_kpts_lists = []
+        for k, kpt in enumerate(uniq_kpts):
+            if ('j2c-/%d' % k) in fswap:
+                adapted_ji_idx = numpy.where(uniq_inverse == k)[0]
+                j2c_kpts_lists.append(adapted_ji_idx)
+
+        for k in numpy.hstack(j2c_kpts_lists):
+            val = [numpy.asarray(fswap['j3c-/%d/%d' % (job, k)]).ravel()
+                   for job in job_ids]
+            val = mpi.gather(numpy.hstack(val))
+            if rank == 0:
+                naux1 = fswap['j3c-/0/%d'%k].shape[0]
+                if aosym_s2[k]:
+                    v = [val[i0*naux1:i1*naux1].reshape(naux1,-1)
+                         for i0,i1 in segs_loc_s2]
+                else:
+                    v = [val[i0*naux1:i1*naux1].reshape(naux1,-1)
+                         for i0,i1 in segs_loc_s1]
+                feri['j3c-/%d'%k] = numpy.hstack(v)
+
     if 'j3c-kptij' in feri: del(feri['j3c-kptij'])
     feri['j3c-kptij'] = kptij_lst
     t1 = log.alltimer_debug1('assembling j3c', *t1)
@@ -468,13 +485,14 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
 
 
 @mpi.register_class
-class DF(df.DF, aft.AFTDF):
+class DF(df.DF, mpi_aft.AFTDF):
 
     build = build
     _make_j3c = _make_j3c
 
-    get_nuc = aft.get_nuc
-    _int_nuc_vloc = aft._int_nuc_vloc
+    get_nuc = mpi_aft.get_nuc
+    get_pp = mpi_aft.get_pp
+    _int_nuc_vloc = mpi_aft._int_nuc_vloc
 
     def dump_flags(self):
         return df.DF.dump_flags(self, logger.Logger(self.stdout, self.verbose))
@@ -513,20 +531,20 @@ class DF(df.DF, aft.AFTDF):
             kpts = numpy.asarray(kpts)
 
         if kpts.shape == (3,):
-            return df_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
-                                with_k, exxdiv)
+            return mpi_df_jk.get_jk(self, dm, hermi, kpts, kpts_band, with_j,
+                                    with_k, exxdiv)
 
         vj = vk = None
         if with_k:
-            vk = df_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+            vk = mpi_df_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
         if with_j:
-            vj = df_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
+            vj = mpi_df_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
 
-    get_eri = get_ao_eri = df_ao2mo.get_eri
-    ao2mo = get_mo_eri = df_ao2mo.general
+    get_eri = get_ao_eri = mpi_df_ao2mo.get_eri
+    ao2mo = get_mo_eri = mpi_df_ao2mo.general
 
-    mpi_prange = prange = aft.AFTDF.mpi_prange
+    mpi_prange = prange = mpi_aft.AFTDF.mpi_prange
 
 
     def loop(self):

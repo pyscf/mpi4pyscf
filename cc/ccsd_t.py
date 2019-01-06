@@ -20,8 +20,8 @@ comm = mpi.comm
 rank = mpi.rank
 
 
-@mpi.parallel_call
-def kernel(mycc):
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
+def kernel(mycc, eris=None):
     cpu0 = (time.clock(), time.time())
     ccsd._sync_(mycc)
     log = logger.new_logger(mycc)
@@ -35,7 +35,7 @@ def kernel(mycc):
     nvir, nocc = t1T.shape
 
     fvo = eris.fock[nocc:,:nocc].copy()
-    mo_energy = eris.fock.diagonal().copy()
+    mo_energy = eris.mo_energy.copy()
     et_sum = numpy.zeros(1, dtype=t1T.dtype)
     drv = _ccsd.libcc.MPICCsd_t_contract
     cpu2 = [time.clock(), time.time()]
@@ -143,7 +143,7 @@ class GlobalDataHandler(object):
         def get(data_idx, tensors, loc):
             if loc == rank:
                 for k, (name, s) in zip(data_idx, tensors):
-                    data[k] = numpy.asarray(self._get_tensor(name, s), order='C')
+                    data[k] = ccsd._cp(self._get_tensor(name, s), order='C')
             else:
                 comm.send((tensors, rank), dest=loc, tag=INQUIRY)
                 for k in data_idx:
