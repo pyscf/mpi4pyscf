@@ -49,15 +49,13 @@ def work_balanced_partition(tasks, costs=None):
     else:
         return tasks[:0]
 
-INQUIRY = 50050
-TASK = 50051
-def work_share_partition(tasks, interval=.02, loadmin=2):
+def work_share_partition(tasks, interval=.1, loadmin=2):
     loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
     loadmin = max(loadmin, len(tasks)//50//pool.size, 1)
     if rank == 0:
-        rest_tasks = list(tasks[loadmin*pool.size:])
+        rest_tasks = list(tasks[loadmin*pool.size:][::-1])
 
-    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin])
+    tasks = list(tasks[loadmin*rank:loadmin*rank+loadmin][::-1])
     def distribute_task():
         while True:
             load = comm.gather(len(tasks))
@@ -66,16 +64,16 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
                     jobs = [None] * pool.size
                     for i in range(pool.size):
                         if rest_tasks and load[i] < loadmin:
-                            jobs[i] = rest_tasks.pop(0)
+                            jobs[i] = rest_tasks.pop()
                 else:
-                    jobs = ['OUT_OF_TASK'] * pool.size
+                    jobs = ['OUT_OF_TASKS'] * pool.size
                 task = comm.scatter(jobs)
             else:
                 task = comm.scatter(None)
 
             if task is not None:
-                tasks.append(task)
-            if isinstance(tasks[-1], str) and tasks[-1] == 'OUT_OF_TASK':
+                tasks.insert(0, task)
+            if tasks and isinstance(tasks[0], str) and tasks[0] == 'OUT_OF_TASKS':
                 return
 
             time.sleep(interval)
@@ -85,80 +83,61 @@ def work_share_partition(tasks, interval=.02, loadmin=2):
 
     while True:
         if tasks:
-            task = tasks.pop(0)
-            if isinstance(task, str) and task == 'OUT_OF_TASK':
+            task = tasks.pop()
+            if isinstance(task, str) and task == 'OUT_OF_TASKS':
                 break
             yield task
-        else:
-            time.sleep(interval)
     tasks_handler.join()
 
-def work_stealing_partition(tasks, interval=.02):
-    tasks = list(static_partition(tasks))
-    out_of_task = [False]
+def work_stealing_partition(tasks, interval=.1):
+    tasks = list(static_partition(tasks)[::-1])
     def task_daemon():
         while True:
             time.sleep(interval)
-            while comm.Iprobe(source=MPI.ANY_SOURCE, tag=INQUIRY):
-                src, req = comm.recv(source=MPI.ANY_SOURCE, tag=INQUIRY)
-                if isinstance(req, str) and req == 'STOP_DAEMON':
-                    return
-                elif tasks:
-                    comm.send(tasks.pop(), src, tag=TASK)
-                elif src == 0 and isinstance(req, str) and req == 'ALL_DONE':
-                    comm.send(out_of_task[0], src, tag=TASK)
-                elif out_of_task[0]:
-                    comm.send('OUT_OF_TASK', src, tag=TASK)
+
+            ntasks = len(tasks)
+            loads = comm.allgather(ntasks)
+            if all(n <= 1 for n in loads):
+                tasks.insert(0, 'OUT_OF_TASKS')
+                break
+
+            elif any(n <= 1 for n in loads):
+                loads = numpy.array(loads)
+                ntasks_mean = int(loads.mean()+.9999)
+                mpi_size = pool.size
+                to_send = [tasks.pop() for i in range(ntasks - ntasks_mean)]
+
+                to_distriubte = comm.gather(to_send)
+                if rank == 0:
+                    to_distriubte = lib.flatten(to_distriubte)
+                    to_append = [[] for i in range(mpi_size)]
+                    i = 1
+                    while to_distriubte and i < mpi_size:
+                        npop = ntasks_mean - loads[i]
+                        to_append[i] = to_distriubte[:npop]
+                        to_distriubte = to_distriubte[npop:]
+                        i += 1
+                    to_append[0] = to_distriubte
                 else:
-                    comm.send('BYPASS', src, tag=TASK)
-    def prepare_to_stop():
-        out_of_task[0] = True
-        if rank == 0:
-            while True:
-                done = []
-                for i in range(1, pool.size):
-                    comm.send((0,'ALL_DONE'), i, tag=INQUIRY)
-                    done.append(comm.recv(source=i, tag=TASK))
-                if all(done):
-                    break
-                time.sleep(interval)
-            for i in range(pool.size):
-                comm.send((0,'STOP_DAEMON'), i, tag=INQUIRY)
-        tasks_handler.join()
+                    to_append = None
+
+                to_append = comm.scatter(to_append)
+                for task in to_append:
+                    tasks.insert(0, task)
 
     if pool.size > 1:
         tasks_handler = threading.Thread(target=task_daemon)
         tasks_handler.start()
 
-    while tasks:
-        task = tasks.pop(0)
-        yield task
+    while True:
+        if tasks:
+            task = tasks.pop()
+            if isinstance(task, str) and task == 'OUT_OF_TASKS':
+                break
+            yield task
 
     if pool.size > 1:
-        def next_proc(proc):
-            proc = (proc+1) % pool.size
-            if proc == rank:
-                proc = (proc+1) % pool.size
-            return proc
-        proc_last = (rank + 1) % pool.size
-        proc = next_proc(proc_last)
-
-        while True:
-            comm.send((rank,None), proc, tag=INQUIRY)
-            task = comm.recv(source=proc, tag=TASK)
-            if isinstance(task, str) and task == 'OUT_OF_TASK':
-                prepare_to_stop()
-                return
-            elif isinstance(task, str) and task == 'BYPASS':
-                if proc == proc_last:
-                    prepare_to_stop()
-                    return
-                else:
-                    proc = next_proc(proc)
-            else:
-                if proc != proc_last:
-                    proc_last, proc = proc, next_proc(proc)
-                yield task
+        tasks_handler.join()
 
 def _create_dtype(dat):
     mpi_dtype = MPI._typedict[dat.dtype.char]
@@ -192,6 +171,37 @@ def bcast(buf, root=0):
     for p0, p1 in lib.prange(0, buf.size, BLKSIZE):
         comm.Bcast(buf_seg[p0:p1], root)
     return buf
+
+
+def bcast_tagged_array(arr):
+    '''Broadcast big nparray or tagged array.'''
+    if comm.bcast(not isinstance(arr, numpy.ndarray)):
+        return comm.bcast(arr)
+
+    new_arr = bcast(arr)
+
+    if comm.bcast(isinstance(arr, lib.NPArrayWithTag)):
+        new_arr = lib.tag_array(new_arr)
+        if rank == 0:
+            kv = []
+            for k, v in arr.__dict__.items():
+                if isinstance(v, numpy.ndarray) and v.nbytes > 1e5:
+                    kv.append((k, 'NPARRAY_TO_BCAST'))
+                else:
+                    kv.append((k, v))
+            comm.bcast(kv)
+        else:
+            kv = comm.bcast(None)
+            new_arr.__dict__.update(kv)
+
+        for k, v in kv:
+            if v is 'NPARRAY_TO_BCAST':
+                new_arr.k = bcast(v)
+
+    if rank != 0:
+        arr = new_arr
+    return arr
+
 
 def reduce(sendbuf, op=MPI.SUM, root=0):
     sendbuf = numpy.asarray(sendbuf, order='C')
@@ -455,7 +465,7 @@ def _init_on_workers(module, name, args, kwargs):
             mol_str, obj_attr = mpi.comm.bcast(None)
             obj.unpack_(obj_attr)
             if mol_str is not None:
-                if '_pseudo' in mol_str:
+                if '"mesh"' in mol_str:
                     obj.cell = cell.loads(mol_str)
                 elif '_bas' in mol_str:
                     obj.mol = mole.loads(mol_str)
@@ -466,7 +476,7 @@ def _init_on_workers(module, name, args, kwargs):
     else:
         # Guess whether the args[0] is the serialized mole or cell objects
         if isinstance(args[0], str) and args[0][0] == '{':
-            if '_pseudo' in args[0]:
+            if '"mesh"' in args[0]:
                 c = cell.loads(args[0])
                 args = (c,) + args[1:]
             elif '_bas' in args[0]:
@@ -537,30 +547,78 @@ def _distribute_call(module, name, reg_procs, args, kwargs):
     dev = reg_procs
     if module is None:  # Master process
         fn = name
-    elif dev is None:
-        fn = getattr(importlib.import_module(module), name)
     else:
-        from mpi4pyscf.tools import mpi
-        dev = mpi._registry[reg_procs[mpi.rank]]
         fn = getattr(importlib.import_module(module), name)
+        if dev is None:
+            pass
+        elif isinstance(dev, str) and dev[0] == '{':
+            # Guess whether dev is Mole or Cell, then deserialize dev
+            from pyscf.gto import mole
+            from pyscf.pbc.gto import cell
+            if '"mesh"' in dev:
+                dev = cell.loads(dev)
+            elif '_bas' in dev:
+                dev = mole.loads(dev)
+        else:
+            from mpi4pyscf.tools import mpi
+            dev = mpi._registry[reg_procs[mpi.rank]]
     return fn(dev, *args, **kwargs)
 
 if rank == 0:
-    def parallel_call(f):
-        def with_mpi(dev, *args, **kwargs):
-            if pool.worker_status == 'R':
+    def parallel_call(fn=None, skip_args=None, skip_kwargs=None):
+        '''
+        Kwargs:
+            skip_args (list of ints): the argumetn indices in the args list.
+                The arguments specified in skip_args will be skipped when
+                broadcasting f's args.
+
+            skip_kwargs (list of keys): the names in the kwargs dict.
+                The keys specified in skip_kwargs will be skipped when
+                broadcasting f's kwargs.
+        '''
+        def mpi_map(f):
+            def with_mpi(dev, *args, **kwargs):
+                if pool.worker_status == 'R':
 # A direct call if worker is not in pending mode
-                return f(dev, *args, **kwargs)
-            elif hasattr(dev, '_reg_procs'):
-                return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
-            else:
-                return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, None, args, kwargs))
-        return with_mpi
+                    return f(dev, *args, **kwargs)
+                else:
+                    return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
+                                      (f.__module__, f.__name__, _dev_for_worker(dev),
+                                       _update_args(args, skip_args),
+                                       _update_kwargs(kwargs, skip_kwargs)))
+            with_mpi.__doc__ = f.__doc__
+            return with_mpi
+
+        if fn is None:
+            return mpi_map
+        else:
+            return mpi_map(fn)
+
+    def _update_args(args, skip_args):
+        if skip_args:
+            nargs = len(args)
+            args = list(args)
+            for k in skip_args:
+                if k == 0:
+                    raise RuntimeError('First argument cannot be skipped.')
+                elif k-1 < nargs:
+                    # k-1 because first argument dev was excluded from args
+                    args[k-1] = 'SKIPPED_ARG'
+        return args
+
+    def _update_kwargs(kwargs, skip_kwargs):
+        if skip_kwargs:
+            for k in skip_kwargs:
+                if k in kwargs:
+                    kwargs[k] = 'SKIPPED_ARG'
+        return kwargs
+
 else:
-    def parallel_call(f):
-        return f
+    def parallel_call(fn=None, skip_args=None, skip_kwargs=None):
+        if fn is None:
+            return lambda f: f
+        else:
+            return fn
 
 
 if rank == 0:
@@ -575,42 +633,82 @@ if rank == 0:
                         break
                     yield dat
         return main_yield
-    def reduced_yield(f):
-        def with_mpi(dev, *args, **kwargs):
-            return pool.apply(_distribute_call, (None, _merge_yield(f), dev, args, kwargs),
-                              (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
-        return with_mpi
+    def reduced_yield(fn=None, skip_args=None, skip_kwargs=None):
+        def mpi_map(f):
+            def with_mpi(dev, *args, **kwargs):
+                if pool.worker_status == 'R':
+                    return f(dev, *args, **kwargs)
+                else:
+                    return pool.apply(_distribute_call,
+                                      (None, _merge_yield(f), dev, args, kwargs),
+                                      (f.__module__, f.__name__, _dev_for_worker(dev),
+                                       _update_args(args, skip_args),
+                                       _update_kwargs(kwargs, skip_kwargs)))
+            with_mpi.__doc__ = f.__doc__
+            return with_mpi
+
+        if fn is None:
+            return mpi_map
+        else:
+            return mpi_map(fn)
+
 else:
-    def reduced_yield(f):
-        def client_yield(*args, **kwargs):
-            for x in f(*args, **kwargs):
-                comm.send(x, 0)
-            comm.send('EOY', 0)
-        return client_yield
+    def reduced_yield(fn=None, skip_args=None, skip_kwargs=None):
+        def mpi_map(f):
+            def client_yield(*args, **kwargs):
+                if pool.worker_status == 'R':
+                    return f(*args, **kwargs)
+                else:
+                    for x in f(*args, **kwargs):
+                        comm.send(x, 0)
+                    comm.send('EOY', 0)
+            client_yield.__doc__ = f.__doc__
+            return client_yield
+
+        if fn is None:
+            return mpi_map
+        else:
+            return mpi_map(fn)
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
     import importlib
     from mpi4pyscf.tools import mpi
-    if module is None:  # Master process
-        fn = name
-        dev = reg_procs
-    else:
-        dev = mpi._registry[reg_procs[mpi.rank]]
-        fn = getattr(importlib.import_module(module), name)
-    return mpi.reduce(fn(dev, *args, **kwargs))
+    result = mpi._distribute_call(module, name, reg_procs, args, kwargs)
+    return mpi.reduce(result)
 if rank == 0:
-    def call_then_reduce(f):
-        def with_mpi(dev, *args, **kwargs):
-            if pool.worker_status == 'R':
-# A direct call if worker is not in pending mode
-                return reduce(f(dev, *args, **kwargs))
-            else:
-                return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
-                                  (f.__module__, f.__name__, dev._reg_procs, args, kwargs))
-        return with_mpi
+    def call_then_reduce(fn=None, skip_args=None, skip_kwargs=None):
+        def mpi_map(f):
+            def with_mpi(dev, *args, **kwargs):
+                if pool.worker_status == 'R':
+                    return f(dev, *args, **kwargs)
+                else:
+                    return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
+                                      (f.__module__, f.__name__, _dev_for_worker(dev),
+                                       _update_args(args, skip_args),
+                                       _update_kwargs(kwargs, skip_kwargs)))
+            with_mpi.__doc__ = f.__doc__
+            return with_mpi
+
+        if fn is None:
+            return mpi_map
+        else:
+            return mpi_map(fn)
+
 else:
-    def call_then_reduce(f):
-        return f
+    def call_then_reduce(fn=None, skip_args=None, skip_kwargs=None):
+        if fn is None:
+            return lambda f: f
+        else:
+            return fn
+
+def _dev_for_worker(dev):
+    '''The first argument (dev) to be sent to workers'''
+    if hasattr(dev, '_reg_procs'):
+        return dev._reg_procs
+    elif isinstance(dev, mole.Mole):
+        return dev.dumps()
+    else:
+        return dev
 
 
 def _segment_counts(counts, p0, p1):
@@ -629,4 +727,12 @@ def prange(start, stop, step):
         i0 = min(stop, start + i * step)
         i1 = min(stop, i0 + step)
         yield i0, i1
+
+def platform_info():
+    def info():
+        import platform
+        from mpi4pyscf.tools import mpi
+        info = mpi.rank, platform.node(), platform.os.getpid()
+        return mpi.pool.comm.gather(info)
+    return pool.apply(info, (), ())
 

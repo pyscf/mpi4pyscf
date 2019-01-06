@@ -1,5 +1,13 @@
 #!/usr/bin/env python
 
+'''
+MPI parallelized RCCSD.
+
+Note this code only works for large system. If system is not big enough and
+many processors are used, it may crash due to manipulating 0-length array in
+some processors.
+'''
+
 import os
 import time
 import ctypes
@@ -22,7 +30,7 @@ BLKMIN = getattr(__config__, 'cc_ccsd_blkmin', 4)
 MEMORYMIN = getattr(__config__, 'cc_ccsd_memorymin', 2000)
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
 def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
            tolnormt=1e-6, verbose=None):
     log = logger.new_logger(mycc, verbose)
@@ -80,7 +88,6 @@ def kernel(mycc, eris=None, t1=None, t2=None, max_cycle=50, tol=1e-8,
 def update_amps(mycc, t1, t2, eris):
     time1 = time0 = time.clock(), time.time()
     log = logger.Logger(mycc.stdout, mycc.verbose)
-    fock = eris.fock
     cpu1 = time0
 
     t1T = t1.T
@@ -93,6 +100,10 @@ def update_amps(mycc, t1, t2, eris):
     log.debug2('vlocs %s', vlocs)
     assert(vloc1-vloc0 == nvir_seg)
 
+    fock = eris.fock
+    mo_e_o = eris.mo_energy[:nocc]
+    mo_e_v = eris.mo_energy[nocc:] + mycc.level_shift
+
     def _rotate_vir_block(buf):
         for task_id, buf in _rotate_tensor_block(buf):
             loc0, loc1 = vlocs[task_id]
@@ -100,7 +111,7 @@ def update_amps(mycc, t1, t2, eris):
 
     fswap = lib.H5TmpFile()
     wVooV = numpy.zeros((nvir_seg,nocc,nocc,nvir))
-    eris_voov = numpy.asarray(eris.ovvo).transpose(1,0,3,2)
+    eris_voov = _cp(eris.ovvo).transpose(1,0,3,2)
     tau  = t2T * .5
     tau += numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
     for task_id, tau, p0, p1 in _rotate_vir_block(tau):
@@ -127,12 +138,10 @@ def update_amps(mycc, t1, t2, eris):
     fov = fock[:nocc,nocc:].copy()
     t1Tnew += fock[nocc:,:nocc]
 
-    foo = fock[:nocc,:nocc].copy()
-    foo[numpy.diag_indices(nocc)] = 0
+    foo = fock[:nocc,:nocc] - numpy.diag(mo_e_o)
     foo += .5 * numpy.einsum('ia,aj->ij', fock[:nocc,nocc:], t1T)
 
-    fvv = fock[nocc:,nocc:].copy()
-    fvv[numpy.diag_indices(nvir)] = 0
+    fvv = fock[nocc:,nocc:] - numpy.diag(mo_e_v)
     fvv -= .5 * numpy.einsum('ai,ib->ab', t1T, fock[:nocc,nocc:])
 
     foo_priv = numpy.zeros_like(foo)
@@ -264,7 +273,7 @@ def update_amps(mycc, t1, t2, eris):
         eris_VOov = wVOov = wVooV = update_wVooV = None
         time1 = log.timer_debug1('voov [%d:%d]'%(p0, p1), *time1)
 
-    wVooV = numpy.asarray(fswap['wVooV1'])
+    wVooV = _cp(fswap['wVooV1'])
     for task_id, wVooV, p0, p1 in _rotate_vir_block(wVooV):
         tmp = lib.einsum('ackj,ckib->ajbi', t2T[:,p0:p1], wVooV)
         t2Tnew += tmp.transpose(0,2,3,1)
@@ -272,7 +281,7 @@ def update_amps(mycc, t1, t2, eris):
     wVooV = tmp = None
     time1 = log.timer_debug1('contracting wVooV', *time1)
 
-    wVOov = numpy.asarray(fswap['wVOov1'])
+    wVOov = _cp(fswap['wVOov1'])
     theta  = t2T * 2
     theta -= t2T.transpose(0,1,3,2)
     for task_id, wVOov, p0, p1 in _rotate_vir_block(wVOov):
@@ -287,13 +296,13 @@ def update_amps(mycc, t1, t2, eris):
 
     theta = t2T.transpose(0,1,3,2) * 2 - t2T
     t1T_priv[vloc0:vloc1] += numpy.einsum('jb,abji->ai', fov, theta)
-    ovoo = numpy.asarray(eris.ovoo)
+    ovoo = _cp(eris.ovoo)
     for task_id, ovoo, p0, p1 in _rotate_vir_block(ovoo):
         t1T_priv[vloc0:vloc1] -= lib.einsum('jbki,abjk->ai', ovoo, theta[:,p0:p1])
     theta = ovoo = None
 
     woooo = mpi.allreduce(woooo)
-    woooo += numpy.asarray(eris.oooo).transpose(0,2,1,3)
+    woooo += _cp(eris.oooo).transpose(0,2,1,3)
     tau = t2T + numpy.einsum('ai,bj->abij', t1T[vloc0:vloc1], t1T)
     t2Tnew += .5 * lib.einsum('abkl,ijkl->abij', tau, woooo)
     tau = woooo = None
@@ -305,8 +314,7 @@ def update_amps(mycc, t1, t2, eris):
     t2Tnew += lib.einsum('acij,bc->abij', t2T, ft_ab)
     t2Tnew -= lib.einsum('ki,abkj->abij', ft_ij, t2T)
 
-    mo_e = fock.diagonal()
-    eia = mo_e[:nocc,None] - mo_e[None,nocc:]
+    eia = mo_e_o[:,None] - mo_e_v
     t1Tnew += numpy.einsum('bi,ab->ai', t1T, fvv)
     t1Tnew -= numpy.einsum('aj,ji->ai', t1T, foo)
     t1Tnew /= eia.T
@@ -508,7 +516,7 @@ if ASYNC:
                     handler.start()
             yield task, buf
 else:
-    def _rotate_tensor_block1(buf):
+    def _rotate_tensor_block(buf):
         ntasks = mpi.pool.size
         tasks = list(range(ntasks))
         tasks = tasks[rank:] + tasks[:rank]
@@ -568,7 +576,7 @@ def _contract_vvvv_t2(mycc, vvvv, t2T, task_locs, out=None, verbose=None):
             sh_ranges = ao2mo.outcore.balance_partition(ao_loc, blksize, sh0, sh1)
             sh_ranges_tasks.append(sh_ranges)
 
-        blksize = max(max(x[2] for x in sh_ranges)
+        blksize = max(max(x[2] for x in sh_ranges) if sh_ranges else 0
                       for sh_ranges in sh_ranges_tasks)
         eribuf = numpy.empty((blksize,blksize,nvirb,nvirb))
         loadbuf = numpy.empty((blksize,blksize,nvirb,nvirb))
@@ -644,7 +652,7 @@ def vector_to_amplitudes(vector, nmo, nocc):
     return t1T.T, t2T.transpose(2,3,0,1)
 
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
 def init_amps(mycc, eris=None):
     eris = getattr(mycc, '_eris', None)
     if eris is None:
@@ -652,7 +660,7 @@ def init_amps(mycc, eris=None):
         eris = mycc._eris
 
     time0 = time.clock(), time.time()
-    mo_e = eris.fock.diagonal()
+    mo_e = eris.mo_energy
     nocc = mycc.nocc
     nvir = mo_e.size - nocc
     eia = mo_e[:nocc,None] - mo_e[None,nocc:]
@@ -675,7 +683,7 @@ def init_amps(mycc, eris=None):
     logger.timer(mycc, 'init mp2', *time0)
     return mycc.emp2, t1T.T, t2T.transpose(2,3,0,1)
 
-@mpi.parallel_call
+@mpi.parallel_call(skip_args=[3], skip_kwargs=['eris'])
 def energy(mycc, t1=None, t2=None, eris=None):
     '''CCSD correlation energy'''
     if t1 is None: t1 = mycc.t1
@@ -818,6 +826,7 @@ class CCSD(ccsd.CCSD):
                 '_nocc'     : self._nocc,
                 '_nmo'      : self._nmo,
                 'diis_file' : self.diis_file,
+                'level_shift': self.level_shift,
                 'direct'    : self.direct}
     def unpack_(self, ccdic):
         self.__dict__.update(ccdic)
@@ -892,10 +901,10 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     eris = ccsd._ChemistsERIs()
     if rank == 0:
         eris._common_init_(mycc, mo_coeff)
-        comm.bcast((eris.mo_coeff, eris.fock, eris.nocc))
+        comm.bcast((eris.mo_coeff, eris.fock, eris.nocc, eris.mo_energy))
     else:
         eris.mol = mycc.mol
-        eris.mo_coeff, eris.fock, eris.nocc = comm.bcast(None)
+        eris.mo_coeff, eris.fock, eris.nocc, eris.mo_energy = comm.bcast(None)
 
     mol = mycc.mol
     mo_coeff = numpy.asarray(eris.mo_coeff, order='F')
@@ -994,6 +1003,20 @@ def _make_eris_outcore(mycc, mo_coeff=None):
 
 def _sync_(mycc):
     return mycc.unpack_(comm.bcast(mycc.pack()))
+
+def _cp(a, order=None):
+    # h5py-2.8 adds an explict LE/BE label to the dataset. When data was
+    # loaded with h5py __getitem__ function, '<' or '>' was attached to the
+    # dtype of the data, e.g. '<d'. The dtype string can be verified by
+    # calling "memoryview(a).format".  mpi4py only supports the native byte
+    # order.  If h5py data was directly passed to mpi4py p2p functions,
+    # KeyError will be raised.  dtype=a.dtype.char below converts the LE/BE
+    # dtype to the native dtype.
+    if a.dtype.byteorder != '=':
+        a = numpy.asarray(a, dtype=a.dtype.char, order=order)
+    else:
+        a = numpy.asarray(a, order=order)
+    return a
 
 
 if __name__ == '__main__':
