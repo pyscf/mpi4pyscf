@@ -671,6 +671,7 @@ else:
             return mpi_map(fn)
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
+    import importlib
     from mpi4pyscf.tools import mpi
     result = mpi._distribute_call(module, name, reg_procs, args, kwargs)
     return mpi.reduce(result)
