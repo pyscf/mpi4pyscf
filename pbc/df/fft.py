@@ -159,10 +159,14 @@ def get_pp(mydf, kpts=None):
     vppnl = []
     for kpt in mpi.static_partition(kpts_lst):
         vppnl.append(vppnl_by_k(kpt))
-    vppnl = mpi.gather(lib.asarray(vppnl, dtype=dtype))
+    vppnl = mpi.gather(lib.asarray(vppnl))
 
     if rank == 0:
-        vpp += vppnl
+        for k in range(nkpts):
+            if dtype == numpy.float64:
+                vpp[k] += vppnl[k].real
+            else:
+                vpp[k] += vppnl[k]
         if kpts is None or numpy.shape(kpts) == (3,):
             vpp = vpp[0]
         return vpp
