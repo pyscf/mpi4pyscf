@@ -734,5 +734,9 @@ def platform_info():
         from mpi4pyscf.tools import mpi
         info = mpi.rank, platform.node(), platform.os.getpid()
         return mpi.pool.comm.gather(info)
-    return pool.apply(info, (), ())
+
+    if pool.worker_status == 'R':
+        return info()
+    else:
+        return pool.apply(info, (), ())
 
