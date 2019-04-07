@@ -456,10 +456,10 @@ def _init_on_workers(module, name, args, kwargs):
     if args is None and kwargs is None:  # Not to call __init__ function on workers
         if module is None:  # master proccess
             obj = name
-            if hasattr(obj, 'mol'):
-                mol_str = obj.mol.dumps()
-            elif hasattr(obj, 'cell'):
+            if hasattr(obj, 'cell'):
                 mol_str = obj.cell.dumps()
+            elif hasattr(obj, 'mol'):
+                mol_str = obj.mol.dumps()
             else:
                 mol_str = None
             mpi.comm.bcast((mol_str, obj.pack()))
@@ -469,7 +469,7 @@ def _init_on_workers(module, name, args, kwargs):
             mol_str, obj_attr = mpi.comm.bcast(None)
             obj.unpack_(obj_attr)
             if mol_str is not None:
-                if '"mesh"' in mol_str:
+                if '"ke_cutoff"' in mol_str:
                     obj.cell = cell.loads(mol_str)
                 elif '_bas' in mol_str:
                     obj.mol = mole.loads(mol_str)
@@ -480,7 +480,7 @@ def _init_on_workers(module, name, args, kwargs):
     else:
         # Guess whether the args[0] is the serialized mole or cell objects
         if isinstance(args[0], str) and args[0][0] == '{':
-            if '"mesh"' in args[0]:
+            if '"ke_cutoff"' in args[0]:
                 c = cell.loads(args[0])
                 args = (c,) + args[1:]
             elif '_bas' in args[0]:
@@ -559,7 +559,7 @@ def _distribute_call(module, name, reg_procs, args, kwargs):
             # Guess whether dev is Mole or Cell, then deserialize dev
             from pyscf.gto import mole
             from pyscf.pbc.gto import cell
-            if '"mesh"' in dev:
+            if '"ke_cutoff"' in dev:
                 dev = cell.loads(dev)
             elif '_bas' in dev:
                 dev = mole.loads(dev)
