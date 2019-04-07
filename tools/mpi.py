@@ -101,11 +101,15 @@ def work_stealing_partition(tasks, interval=.1):
                 tasks.insert(0, 'OUT_OF_TASKS')
                 break
 
-            elif any(n <= 1 for n in loads):
+            elif any(n <= 1 for n in loads) and any(n >= 3 for n in loads):
                 loads = numpy.array(loads)
-                ntasks_mean = int(loads.mean()+.9999)
+                ntasks_mean = int(loads.mean()) + 1
                 mpi_size = pool.size
-                to_send = [tasks.pop() for i in range(ntasks - ntasks_mean)]
+                # number of tasks may be changed when reaching this spot. It
+                # may lead to the condition that len(tasks) is less than the
+                # ntasks-ntasks_mean and an error "pop from empty list". The
+                # status of tasks should be checked before calling tasks.pop
+                to_send = [tasks.pop() for i in range(len(tasks)-ntasks_mean) if tasks]
 
                 to_distriubte = comm.gather(to_send)
                 if rank == 0:
