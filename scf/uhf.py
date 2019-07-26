@@ -15,10 +15,10 @@ class UHF(uhf.UHF, mpi_hf.SCF):
     get_j = mpi_hf.SCF.get_j
     get_k = mpi_hf.SCF.get_k
 
-    def dump_flags(self):
+    def dump_flags(self, verbose=None):
         mpi_info = mpi.platform_info()
         if rank == 0:
-            uhf.UHF.dump_flags(self)
+            uhf.UHF.dump_flags(self, verbose)
             lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)
         return self
 

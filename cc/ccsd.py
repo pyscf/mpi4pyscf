@@ -832,9 +832,9 @@ class CCSD(ccsd.CCSD):
         self.__dict__.update(ccdic)
         return self
 
-    def dump_flags(self):
+    def dump_flags(self, verbose=None):
         if rank == 0:
-            ccsd.CCSD.dump_flags(self)
+            ccsd.CCSD.dump_flags(self, verbose)
         return self
     def sanity_check(self):
         if rank == 0:
