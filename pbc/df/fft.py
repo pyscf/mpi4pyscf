@@ -25,6 +25,7 @@ from pyscf.pbc.df import fft
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
 from mpi4pyscf.pbc.df import fft_jk as mpi_fft_jk
+from mpi4pyscf.pbc.df import fft_occk as mpi_fft_occk
 
 comm = mpi.comm
 rank = mpi.rank
@@ -186,6 +187,8 @@ class FFTDF(fft.FFTDF):
             raise RuntimeError('MPI-FFTDF module does not support 0D/1D/2D low-dimension '
                                'PBC system')
         fft.FFTDF.__init__(self, cell, kpts)
+        # for occ-fft
+        self.occ = False
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -251,7 +254,10 @@ class FFTDF(fft.FFTDF):
                 vj = mpi_fft_jk.get_j(self, dm, hermi, kpts, kpts_band)
         else:
             if with_k:
-                vk = mpi_fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+                if self.occ == False:
+                    vk = mpi_fft_jk.get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+                else:
+                    vk = mpi_fft_occk.get_k_kpts_occ(self, dm, hermi, kpts, kpts_band, exxdiv)
             if with_j:
                 vj = mpi_fft_jk.get_j_kpts(self, dm, hermi, kpts, kpts_band)
         return vj, vk
