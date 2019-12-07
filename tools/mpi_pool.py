@@ -99,7 +99,11 @@ class MPIPool(object):
             # Check if message is special type containing new function
             # to be applied
             elif isinstance(task, _function_wrapper):
-                code = marshal.loads(task.func_code)
+                if sys.version_info < (3,4):
+                    code = marshal.loads(task.func_code)
+                else:
+                    code = marshal.loads(task.__code__)
+
                 if self.debug:
                     print('function {0}'.format(code))
                     print("Worker {0} replaced its task function: {1}."
