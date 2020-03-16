@@ -572,7 +572,7 @@ if rank == 0:
     def parallel_call(fn=None, skip_args=None, skip_kwargs=None):
         '''
         Kwargs:
-            skip_args (list of ints): the argumetn indices in the args list.
+            skip_args (list of ints): the argument indices in the args list.
                 The arguments specified in skip_args will be skipped when
                 broadcasting f's args.
 

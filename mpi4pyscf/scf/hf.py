@@ -175,7 +175,7 @@ def _vj_jobs_s8(ngroups, hermi=1):
                 lp = kp
                 jobs.append(((ip, jp, kp, lp), recipe))
 
-    # ip == kp and ip > jp and kp > lp
+    # ip > jp and ip == kp and kp > lp
     recipe = ((1,0,2,3), (0,1,2,3))
     for ip in range(ngroups):
         for jp in range(ip):
@@ -183,7 +183,7 @@ def _vj_jobs_s8(ngroups, hermi=1):
             for lp in range(kp):
                 jobs.append(((ip, jp, kp, lp), recipe))
 
-    # ip == jp and ip >= kp
+    # ip == jp and ip >= kp and kp > lp
     recipe = ((1,0,2,3), (2,3,1,0), (3,2,1,0))
     for ip in range(ngroups):
         jp = ip
@@ -230,7 +230,7 @@ def _vk_jobs_s8(ngroups, hermi=1):
                 lp = kp
                 jobs.append(((ip, jp, kp, lp), recipe))
 
-    # ip == kp and ip > jp and kp > lp
+    # ip > jp and ip == kp and kp > lp
     recipe = ((1,2,0,3), (0,2,1,3), (1,3,0,2), (0,3,1,2))
     for ip in range(ngroups):
         for jp in range(ip):
@@ -238,7 +238,7 @@ def _vk_jobs_s8(ngroups, hermi=1):
             for lp in range(kp):
                 jobs.append(((ip, jp, kp, lp), recipe))
 
-    # ip == jp and ip >= kp
+    # ip == jp and ip >= kp and kp > lp
     if hermi:
         recipe = ((1,2,0,3), (1,3,0,2),            (3,1,2,0))
     else:
