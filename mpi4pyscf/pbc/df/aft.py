@@ -154,8 +154,13 @@ class AFTDF(aft.AFTDF):
     ao2mo = get_mo_eri = mpi_aft_ao2mo.general
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
+               with_j=True, with_k=True, omega=None, exxdiv='ewald'):
         '''Gamma-point calculation by default'''
+        # J/K for RSH functionals
+        if omega is not None:
+            return aft._sub_df_jk_(self, dm, hermi, kpts, kpts_band,
+                                   with_j, with_k, omega, exxdiv)
+
         if kpts is None:
             if numpy.all(self.kpts == 0):
                 kpts = numpy.zeros(3)

@@ -21,6 +21,7 @@ from pyscf.pbc.dft import gen_grid
 from pyscf.pbc.dft import numint
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.df import fft
+from pyscf.pbc.df.aft import _sub_df_jk_
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.tools import mpi
@@ -233,7 +234,12 @@ class FFTDF(fft.FFTDF):
     get_nuc = get_nuc
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
+               with_j=True, with_k=True, omega=None, exxdiv='ewald'):
+        # J/K for RSH functionals
+        if omega is not None:
+            return _sub_df_jk_(self, dm, hermi, kpts, kpts_band,
+                               with_j, with_k, omega, exxdiv)
+
         if kpts is None:
             if numpy.all(self.kpts == 0):
                 # Gamma-point calculation by default

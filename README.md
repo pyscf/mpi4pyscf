@@ -1,11 +1,10 @@
-=======================
 An MPI plugin for PySCF
 =======================
 
 mpi4pyscf is a plugin for PySCF which enables MPI (Message Passing Interface) parallelism.
 
 Quick start
-===========
+-----------
 
 When the script of the serial PySCF version works, MPI can be activated by
 importing mpi4pyscf and replacing the corresponding initialization statements in
@@ -30,7 +29,7 @@ mf = scf.RHF(mol).run()
 See more examples of usage in https://github.com/pyscf/mpi4pyscf/examples
 
 Installation
-=============
+------------
 
 ```
 pip install mpi4pyscf

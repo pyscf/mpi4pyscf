@@ -24,8 +24,6 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
     if mf.nlc != '':
         raise NotImplementedError
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
-    if abs(omega) > 1e-10:  # For range separated Coulomb operator
-        raise NotImplementedError
 
     # Broadcast the large input arrays here.
     if any(comm.allgather(isinstance(dm, str) and dm == 'SKIPPED_ARG')):
@@ -69,15 +67,23 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         if getattr(vhf_last, 'vk', None) is not None:
             ddm = numpy.asarray(dm) - dm_last
             vj, vk = mf.get_jk(mol, ddm, hermi)
-            ddm = None
             vj = mpi.reduce(vj)
             vk = mpi.reduce(vk) * hyb
+            if abs(omega) > 1e-10:
+                vklr = mf.get_k(mol, ddm, hermi, omega=omega)
+                vklr = mpi.reduce(vklr) * (alpha - hyb)
+                vk += vklr
+            ddm = None
             vj += vhf_last.vj
             vk += vhf_last.vk
         else:
             vj, vk = mf.get_jk(mol, dm, hermi)
             vj = mpi.reduce(vj)
             vk = mpi.reduce(vk) * hyb
+            if abs(omega) > 1e-10:
+                vklr = mf.get_k(mol, dm, hermi, omega=omega)
+                vklr = mpi.reduce(vklr) * (alpha - hyb)
+                vk += vklr
         vxc += vj - vk * .5
 
         if ground_state:
@@ -100,6 +106,9 @@ def _setup_grids_(mf, dm):
         grids.build(with_non0tab=False)
         grids.coords = numpy.array_split(grids.coords, mpi.pool.size)
         grids.weights = numpy.array_split(grids.weights, mpi.pool.size)
+        ngrids = comm.bcast(grids.weights.size)
+    else:
+        ngrids = comm.bcast(None)
     grids.coords = mpi.scatter(grids.coords)
     grids.weights = mpi.scatter(grids.weights)
 
@@ -108,8 +117,8 @@ def _setup_grids_(mf, dm):
         rho = mf._numint.get_rho(mol, dm, grids, mf.max_memory)
         n = comm.allreduce(numpy.dot(rho, grids.weights))
         if abs(n-mol.nelectron) < rks.NELEC_ERROR_TOL*n:
-            rw = mpi.gather(rho * grids.weights)
-            idx = abs(rw) > mf.small_rho_cutoff / grids.weights.size
+            rw = rho * grids.weights
+            idx = abs(rw) > mf.small_rho_cutoff / ngrids
             logger.alldebug1(mf, 'Drop grids %d',
                              grids.weights.size - numpy.count_nonzero(idx))
             grids.coords  = numpy.asarray(grids.coords [idx], order='C')

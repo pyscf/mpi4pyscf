@@ -17,6 +17,7 @@ from pyscf.pbc.df import df
 from pyscf.pbc.df.incore import wrap_int3c
 from pyscf.pbc.df.df import fuse_auxcell, make_modrho_basis, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
+from pyscf.pbc.df.aft import _sub_df_jk_
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 from pyscf.pbc import gto as pbcgto
@@ -520,7 +521,12 @@ class DF(df.DF, mpi_aft.AFTDF):
         return self
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
+               with_j=True, with_k=True, omega=None, exxdiv='ewald'):
+        # J/K for RSH functionals
+        if omega is not None:
+            return _sub_df_jk_(self, dm, hermi, kpts, kpts_band,
+                               with_j, with_k, omega, exxdiv)
+
         if kpts is None:
             if numpy.all(self.kpts == 0):
                 # Gamma-point calculation by default

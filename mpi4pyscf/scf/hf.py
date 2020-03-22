@@ -16,7 +16,7 @@ comm = mpi.comm
 rank = mpi.rank
 
 @mpi.parallel_call(skip_args=[1])
-def get_jk(mol_or_mf, dm, hermi=1):
+def get_jk(mol_or_mf, dm, hermi=1, omega=None):
     '''MPI version of scf.hf.get_jk function'''
     #vj = get_j(mol_or_mf, dm, hermi)
     #vk = get_k(mol_or_mf, dm, hermi)
@@ -32,14 +32,20 @@ def get_jk(mol_or_mf, dm, hermi=1):
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
-    vj, vk = _eval_jk(mf, dm, hermi, _jk_jobs_s8)
+
+    if omega is None:
+        vj, vk = _eval_jk(mf, dm, hermi, _jk_jobs_s8)
+    else:
+        with mf.mol.with_range_coulomb(omega):
+            vj, vk = _eval_jk(mf, dm, hermi, _jk_jobs_s8)
+
     if rank == 0:
         for i in range(vj.shape[0]):
             lib.hermi_triu(vj[i], 1, inplace=True)
     return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
 @mpi.parallel_call(skip_args=[1])
-def get_j(mol_or_mf, dm, hermi=1):
+def get_j(mol_or_mf, dm, hermi=1, omega=None):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
@@ -55,11 +61,15 @@ def get_j(mol_or_mf, dm, hermi=1):
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
         hermi = 1
-        vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
+        if omega is None:
+            vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
+        else:
+            with mf.mol.with_range_coulomb(omega):
+                vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
     return vj.reshape(dm.shape)
 
 @mpi.parallel_call(skip_args=[1])
-def get_k(mol_or_mf, dm, hermi=1):
+def get_k(mol_or_mf, dm, hermi=1, omega=None):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
@@ -74,7 +84,11 @@ def get_k(mol_or_mf, dm, hermi=1):
         mf.opt = mf.init_direct_scf()
     with lib.temporary_env(mf.opt._this.contents,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vk_prescreen')):
-        vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)
+        if omega is None:
+            vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)
+        else:
+            with mf.mol.with_range_coulomb(omega):
+                vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)
     return vk.reshape(dm.shape)
 
 def _eval_jk(mf, dm, hermi, gen_jobs):
@@ -280,19 +294,19 @@ def _jk_jobs_s8(ngroups, hermi=1):
 class SCF(hf.SCF):
 
     @lib.with_doc(hf.SCF.get_jk.__doc__)
-    def get_jk(self, mol, dm, hermi=1):
+    def get_jk(self, mol, dm, hermi=1, with_j=True, with_k=True, omega=None):
         assert(mol is self.mol)
-        return get_jk(self, dm, hermi)
+        return get_jk(self, dm, hermi, omega)
 
     @lib.with_doc(hf.SCF.get_j.__doc__)
-    def get_j(self, mol, dm, hermi=1):
+    def get_j(self, mol, dm, hermi=1, omega=None):
         assert(mol is self.mol)
-        return get_j(self, dm, hermi)
+        return get_j(self, dm, hermi, omega)
 
     @lib.with_doc(hf.SCF.get_k.__doc__)
-    def get_k(self, mol, dm, hermi=1):
+    def get_k(self, mol, dm, hermi=1, omega=None):
         assert(mol is self.mol)
-        return get_k(self, dm, hermi)
+        return get_k(self, dm, hermi, omega)
 
     def pack(self):
         return {'verbose': self.verbose,

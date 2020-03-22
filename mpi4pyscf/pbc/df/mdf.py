@@ -22,6 +22,7 @@ from pyscf.pbc.df import mdf
 from pyscf.pbc.df.incore import wrap_int3c
 from pyscf.pbc.df.df import fuse_auxcell, unique
 from pyscf.pbc.df.df_jk import zdotCN, is_zero, gamma_point
+from pyscf.pbc.df.aft import _sub_df_jk_
 from pyscf.gto.mole import PTR_COORD
 from pyscf.ao2mo.outcore import balance_segs
 
@@ -305,7 +306,12 @@ class MDF(mdf.MDF, mpi_df.DF):
     _int_nuc_vloc = mpi_aft._int_nuc_vloc
 
     def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
-               with_j=True, with_k=True, exxdiv='ewald'):
+               with_j=True, with_k=True, omega=None, exxdiv='ewald'):
+        # J/K for RSH functionals
+        if omega is not None:
+            return _sub_df_jk_(self, dm, hermi, kpts, kpts_band,
+                               with_j, with_k, omega, exxdiv)
+
         if kpts is None:
             if numpy.all(self.kpts == 0):
                 # Gamma-point calculation by default

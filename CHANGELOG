@@ -1,0 +1,22 @@
+mpi4pyscf 0.3 (2020-3-21)
+-------------------------
+Bind to pyscf-1.7
+* Added
+  - Supports to RSH functionals for molecular HF and KS methods
+
+
+mpi4pyscf 0.2 (2018-8-21)
+-------------------------
+Bind to pyscf-1.6
+* Added
+  - molecular RHF and UHF methods
+  - molecular RKS and UKS methods
+  - PBC df module (including FFT, AFT, GDF, MDF)
+  - molecular RMP2
+  - molecular RCCSD
+
+mpi4pyscf 0.1 (2016-7-23)
+-------------------------
+Initialize mpi4pyscf
+* Added
+  - mpi4py wrapper and mpi tools
