@@ -4,19 +4,13 @@ An MPI plugin for PySCF
 
 __version__ = '0.3'
 
-# import all pyscf submodules before suspending the slave processes
-from pyscf import __all__
+import pyscf
 from distutils.version import LooseVersion
 assert(LooseVersion(pyscf.__version__) >= LooseVersion('1.7'))
 del(LooseVersion)
 
-from . import lib
-from . import pbc
-from . import cc
-from . import mp
-from . import scf
-from . import dft
-
+# import all pyscf submodules before suspending the slave processes
+from pyscf import __all__
 
 # NOTE: suspend all slave processes at last
 from .tools import mpi
