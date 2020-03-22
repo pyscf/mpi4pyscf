@@ -99,10 +99,7 @@ class MPIPool(object):
             # Check if message is special type containing new function
             # to be applied
             elif isinstance(task, _function_wrapper):
-                if sys.version_info < (3,4):
-                    code = marshal.loads(task.func_code)
-                else:
-                    code = marshal.loads(task.__code__)
+                code = marshal.loads(task.func_code)
 
                 if self.debug:
                     print('function {0}'.format(code))
@@ -170,14 +167,9 @@ class _close_pool_message(object):
 
 
 class _function_wrapper(object):
-    if sys.version_info < (3,4):
-        def __init__(self, function):
-            #print(function.__closure__)
-            self.func_code = marshal.dumps(function.func_code)
-    else:
-        def __init__(self, function):
-            #print(function.__closure__)
-            self.func_code = marshal.dumps(function.__code__)
+    def __init__(self, function):
+        #print(function.__closure__)
+        self.func_code = marshal.dumps(function.__code__)
 
 def _error_function(task):
     raise RuntimeError("Pool was sent tasks before being told what "

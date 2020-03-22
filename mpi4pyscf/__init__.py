@@ -30,8 +30,9 @@ if not mpi.pool.is_master():
     try:
         mpi.pool.wait()
     except BaseException as err:
-        traceback.print_exc(err)
-        mpi.comm.Abort()
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        mpi.comm.Abort(1)
         exit(1)
 
     if sys.version_info < (3,4):
