@@ -50,6 +50,11 @@ def work_balanced_partition(tasks, costs=None):
         return tasks[:0]
 
 def work_share_partition(tasks, interval=.1, loadmin=2):
+    if pool.size <= 1:
+        for task in tasks:
+            yield task
+        return
+
     loadmin = min(loadmin, (len(tasks)+pool.size-1)//pool.size)
     loadmin = max(loadmin, len(tasks)//50//pool.size, 1)
     if rank == 0:
@@ -90,6 +95,11 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
     tasks_handler.join()
 
 def work_stealing_partition(tasks, interval=.1):
+    if pool.size <= 1:
+        for task in tasks:
+            yield task
+        return
+
     tasks = list(static_partition(tasks)[::-1])
     def task_daemon():
         while True:
@@ -129,9 +139,8 @@ def work_stealing_partition(tasks, interval=.1):
                 for task in to_append:
                     tasks.insert(0, task)
 
-    if pool.size > 1:
-        tasks_handler = threading.Thread(target=task_daemon)
-        tasks_handler.start()
+    tasks_handler = threading.Thread(target=task_daemon)
+    tasks_handler.start()
 
     while True:
         if tasks:
@@ -140,8 +149,7 @@ def work_stealing_partition(tasks, interval=.1):
                 break
             yield task
 
-    if pool.size > 1:
-        tasks_handler.join()
+    tasks_handler.join()
 
 def _create_dtype(dat):
     mpi_dtype = MPI._typedict[dat.dtype.char]
@@ -582,8 +590,8 @@ if rank == 0:
         '''
         def mpi_map(f):
             def with_mpi(dev, *args, **kwargs):
-                if pool.worker_status == 'R':
-# A direct call if worker is not in pending mode
+                if pool.size <= 1 or pool.worker_status == 'R':
+                    # A direct call if worker is not in pending mode
                     return f(dev, *args, **kwargs)
                 else:
                     return pool.apply(_distribute_call, (None, f, dev, args, kwargs),
@@ -640,7 +648,7 @@ if rank == 0:
     def reduced_yield(fn=None, skip_args=None, skip_kwargs=None):
         def mpi_map(f):
             def with_mpi(dev, *args, **kwargs):
-                if pool.worker_status == 'R':
+                if pool.size <= 1 or pool.worker_status == 'R':
                     return f(dev, *args, **kwargs)
                 else:
                     return pool.apply(_distribute_call,
@@ -660,7 +668,7 @@ else:
     def reduced_yield(fn=None, skip_args=None, skip_kwargs=None):
         def mpi_map(f):
             def client_yield(*args, **kwargs):
-                if pool.worker_status == 'R':
+                if pool.size <= 1 or pool.worker_status == 'R':
                     return f(*args, **kwargs)
                 else:
                     for x in f(*args, **kwargs):
@@ -683,7 +691,7 @@ if rank == 0:
     def call_then_reduce(fn=None, skip_args=None, skip_kwargs=None):
         def mpi_map(f):
             def with_mpi(dev, *args, **kwargs):
-                if pool.worker_status == 'R':
+                if pool.size <= 1 or pool.worker_status == 'R':
                     return f(dev, *args, **kwargs)
                 else:
                     return pool.apply(_reduce_call, (None, f, dev, args, kwargs),
@@ -739,7 +747,7 @@ def platform_info():
         info = mpi.rank, platform.node(), platform.os.getpid()
         return mpi.pool.comm.gather(info)
 
-    if pool.worker_status == 'R':
+    if pool.size <= 1 or pool.worker_status == 'R':
         return info()
     else:
         return pool.apply(info, (), ())

@@ -1,0 +1,29 @@
+language: python
+python:
+  - 3.7
+
+os: linux
+dist: xenial
+sudo: required
+
+git:
+  depth: 20
+
+cache:
+  apt: true
+  pip: true
+
+env:
+  global:
+    - OMP_NUM_THREADS=1
+
+before_install:
+  - sudo apt-get -qq install openmpi
+  - pip3 install pyscf, mpi4py, pytest-cov
+
+install:
+  - pip3 install .
+
+script:
+  - NP=1 tests/runtests.sh
+
