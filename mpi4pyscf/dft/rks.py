@@ -104,9 +104,9 @@ def _setup_grids_(mf, dm):
 
     if rank == 0:
         grids.build(with_non0tab=False)
+        ngrids = comm.bcast(grids.weights.size)
         grids.coords = numpy.array_split(grids.coords, mpi.pool.size)
         grids.weights = numpy.array_split(grids.weights, mpi.pool.size)
-        ngrids = comm.bcast(grids.weights.size)
     else:
         ngrids = comm.bcast(None)
     grids.coords = mpi.scatter(grids.coords)
