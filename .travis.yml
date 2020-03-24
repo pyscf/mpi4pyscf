@@ -18,7 +18,7 @@ env:
     - OMP_NUM_THREADS=1
 
 before_install:
-  - sudo apt-get -qq install libopenmpi-dev
+  - sudo apt-get -qq install libopenmpi-dev openmpi-bin
   - pip3 install pyscf mpi4py pytest-cov
 
 install:
