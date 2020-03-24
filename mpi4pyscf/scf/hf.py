@@ -15,8 +15,9 @@ from mpi4pyscf.tools import mpi
 comm = mpi.comm
 rank = mpi.rank
 
+@lib.with_doc(hf.get_jk.__doc__)
 @mpi.parallel_call(skip_args=[1])
-def get_jk(mol_or_mf, dm, hermi=1, omega=None):
+def get_jk(mol_or_mf=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
     '''MPI version of scf.hf.get_jk function'''
     #vj = get_j(mol_or_mf, dm, hermi)
     #vk = get_k(mol_or_mf, dm, hermi)
@@ -44,8 +45,9 @@ def get_jk(mol_or_mf, dm, hermi=1, omega=None):
             lib.hermi_triu(vj[i], 1, inplace=True)
     return vj.reshape(dm.shape), vk.reshape(dm.shape)
 
+@lib.with_doc(hf.SCF.get_j.__doc__)
 @mpi.parallel_call(skip_args=[1])
-def get_j(mol_or_mf, dm, hermi=1, omega=None):
+def get_j(mol_or_mf=None, dm=None, hermi=1, omega=None):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
@@ -68,8 +70,9 @@ def get_j(mol_or_mf, dm, hermi=1, omega=None):
                 vj = _eval_jk(mf, dm, hermi, _vj_jobs_s8)
     return vj.reshape(dm.shape)
 
+@lib.with_doc(hf.SCF.get_k.__doc__)
 @mpi.parallel_call(skip_args=[1])
-def get_k(mol_or_mf, dm, hermi=1, omega=None):
+def get_k(mol_or_mf=None, dm=None, hermi=1, omega=None):
     if isinstance(mol_or_mf, gto.mole.Mole):
         mf = hf.SCF(mol_or_mf).view(SCF)
     else:
@@ -294,18 +297,18 @@ def _jk_jobs_s8(ngroups, hermi=1):
 class SCF(hf.SCF):
 
     @lib.with_doc(hf.SCF.get_jk.__doc__)
-    def get_jk(self, mol, dm, hermi=1, with_j=True, with_k=True, omega=None):
-        assert(mol is self.mol)
-        return get_jk(self, dm, hermi, omega)
+    def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
+        assert mol is None or mol is self.mol
+        return get_jk(self, dm, hermi, omega=omega)
 
     @lib.with_doc(hf.SCF.get_j.__doc__)
-    def get_j(self, mol, dm, hermi=1, omega=None):
-        assert(mol is self.mol)
+    def get_j(self, mol=None, dm=None, hermi=1, omega=None):
+        assert mol is None or mol is self.mol
         return get_j(self, dm, hermi, omega)
 
     @lib.with_doc(hf.SCF.get_k.__doc__)
-    def get_k(self, mol, dm, hermi=1, omega=None):
-        assert(mol is self.mol)
+    def get_k(self, mol=None, dm=None, hermi=1, omega=None):
+        assert mol is None or mol is self.mol
         return get_k(self, dm, hermi, omega)
 
     def pack(self):

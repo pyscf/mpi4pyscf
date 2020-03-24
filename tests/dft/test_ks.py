@@ -21,20 +21,22 @@ def test_veff(get_mol):
     numpy.random.seed(1)
     dm = numpy.random.random((2,nao,nao))
     dm = dm + dm.transpose(0,2,1)
+    dm *= .01
+    dm += mol.UKS(xc='blyp').get_init_guess()
 
     mf = mpi_dft.RKS(mol)
     mf.xc = 'b3lyp'
     vxc = mf.get_veff(mol, dm)
-    mf0 = mol.RKS(mol, xc='b3lyp')
+    mf0 = mol.RKS(xc='b3lyp')
     vxc0 = mf0.get_veff(mol, dm)
-    print(abs(vxc0-vxc).max())
+    assert abs(vxc0-vxc).max() < 1e-9
 
     mol1 = mol.copy()
     mol1.spin = 2
     mf = mpi_dft.UKS(mol1)
     mf.xc = 'b3lyp'
     vxc = mf.get_veff(mol1, dm)
-    mf0 = mol1.UKS(mol1, xc='b3lyp')
+    mf0 = mol1.UKS(xc='b3lyp')
     vxc0 = mf0.get_veff(mol1, dm)
     assert abs(vxc0-vxc).max() < 1e-9
 

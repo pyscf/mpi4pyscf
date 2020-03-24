@@ -25,5 +25,6 @@ install:
   - pip3 install .
 
 script:
-  - NP=1 tests/runtests.sh
+  #- mpiexec -np 1 tests/runtests.sh
+  - mpiexec -np 2 tests/runtests.sh
 

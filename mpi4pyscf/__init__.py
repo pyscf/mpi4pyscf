@@ -38,4 +38,3 @@ if not mpi.pool.is_master():
     if sys.version_info < (3,4):
         if not imp.lock_held():
             imp.acquire_lock()
-    exit(0)

@@ -15,6 +15,7 @@ comm = mpi.comm
 rank = mpi.rank
 
 
+@lib.with_doc(uks.get_veff.__doc__)
 @mpi.parallel_call(skip_args=[1, 2, 3, 4], skip_kwargs=['dm_last', 'vhf_last'])
 def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
     t0 = (time.clock(), time.time())
