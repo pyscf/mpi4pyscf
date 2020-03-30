@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# mpiexec -np 2 runtests.sh
+
 # https://www.python.org/dev/peps/pep-0565/
 #export PYTHONWARNINGS=once # Warn once per Python process
 #export PYTHONWARNINGS=ignore # Never warn

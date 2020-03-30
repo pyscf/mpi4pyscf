@@ -15,6 +15,11 @@ from mpi4pyscf.tools import mpi
 comm = mpi.comm
 rank = mpi.rank
 
+from pyscf import __config__
+BLKSIZE_MIN = getattr(__config__, 'scf_hf_BLKSIZE_MIN', 60)
+BLKSIZE_MAX = getattr(__config__, 'scf_hf_BLKSIZE_MAX', 800)
+
+
 @lib.with_doc(hf.get_jk.__doc__)
 @mpi.parallel_call(skip_args=[1])
 def get_jk(mol_or_mf=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
@@ -167,7 +172,7 @@ def _partition_bas(mol):
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
     ngroups = max((mpi.pool.size*50*8)**.25, 9)
-    blksize = max(60, min(nao / ngroups, 800))
+    blksize = max(BLKSIZE_MIN, min(nao / ngroups, BLKSIZE_MAX))
     groups = ao2mo.outcore.balance_partition(ao_loc, blksize)
     bas_groups = [x[:2] for x in groups]
     logger.debug1(mol, 'mpi.size %d, blksize = %d, ngroups = %d',

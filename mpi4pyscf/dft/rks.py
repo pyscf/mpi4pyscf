@@ -57,33 +57,28 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         vk = None
         if getattr(vhf_last, 'vj', None) is not None:
             ddm = numpy.asarray(dm) - dm_last
-            vj = mpi.reduce(mf.get_j(mol, ddm, hermi))
+            vj = mf.get_j(mol, ddm, hermi)
             vj += vhf_last.vj
         else:
             vj = mf.get_j(mol, dm, hermi)
-            vj = mpi.reduce(vj)
         vxc += vj
     else:
         if getattr(vhf_last, 'vk', None) is not None:
             ddm = numpy.asarray(dm) - dm_last
             vj, vk = mf.get_jk(mol, ddm, hermi)
-            vj = mpi.reduce(vj)
-            vk = mpi.reduce(vk) * hyb
+            vk *= hyb
             if abs(omega) > 1e-10:
                 vklr = mf.get_k(mol, ddm, hermi, omega=omega)
-                vklr = mpi.reduce(vklr) * (alpha - hyb)
-                vk += vklr
+                vk += vklr * (alpha - hyb)
             ddm = None
             vj += vhf_last.vj
             vk += vhf_last.vk
         else:
             vj, vk = mf.get_jk(mol, dm, hermi)
-            vj = mpi.reduce(vj)
-            vk = mpi.reduce(vk) * hyb
+            vk *= hyb
             if abs(omega) > 1e-10:
                 vklr = mf.get_k(mol, dm, hermi, omega=omega)
-                vklr = mpi.reduce(vklr) * (alpha - hyb)
-                vk += vklr
+                vk += vklr * (alpha - hyb)
         vxc += vj - vk * .5
 
         if ground_state:

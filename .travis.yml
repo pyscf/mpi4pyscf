@@ -26,5 +26,6 @@ install:
 
 script:
   #- mpiexec -np 1 tests/runtests.sh
-  - mpiexec -np 2 tests/runtests.sh
-
+  - echo 'scf_hf_BLKSIZE_MIN = 4' > pyscf_config.py
+  - PYSCF_CONFIG_FILE=$(pwd)/pyscf_config.py
+    mpiexec -np 2 tests/runtests.sh
