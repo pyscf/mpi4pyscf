@@ -71,14 +71,14 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
                         if rest_tasks and load[i] < loadmin:
                             jobs[i] = rest_tasks.pop()
                 else:
-                    jobs = ['OUT_OF_TASKS'] * pool.size
+                    jobs = [_MsgOutOfTasks] * pool.size
                 task = comm.scatter(jobs)
             else:
                 task = comm.scatter(None)
 
             if task is not None:
                 tasks.insert(0, task)
-            if tasks and isinstance(tasks[0], str) and tasks[0] == 'OUT_OF_TASKS':
+            if tasks and isinstance(tasks[0], _MsgOutOfTasks):
                 return
 
             time.sleep(interval)
@@ -89,7 +89,7 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
     while True:
         if tasks:
             task = tasks.pop()
-            if isinstance(task, str) and task == 'OUT_OF_TASKS':
+            if isinstance(task, _MsgOutOfTasks):
                 break
             yield task
     tasks_handler.join()
@@ -108,7 +108,7 @@ def work_stealing_partition(tasks, interval=.1):
             ntasks = len(tasks)
             loads = comm.allgather(ntasks)
             if all(n <= 1 for n in loads):
-                tasks.insert(0, 'OUT_OF_TASKS')
+                tasks.insert(0, _MsgOutOfTasks)
                 break
 
             elif any(n <= 1 for n in loads) and any(n >= 3 for n in loads):
@@ -145,7 +145,7 @@ def work_stealing_partition(tasks, interval=.1):
     while True:
         if tasks:
             task = tasks.pop()
-            if isinstance(task, str) and task == 'OUT_OF_TASKS':
+            if isinstance(task, _MsgOutOfTasks):
                 break
             yield task
 
@@ -198,7 +198,7 @@ def bcast_tagged_array(arr):
             kv = []
             for k, v in arr.__dict__.items():
                 if isinstance(v, numpy.ndarray) and v.nbytes > 1e5:
-                    kv.append((k, 'NPARRAY_TO_BCAST'))
+                    kv.append((k, _MsgNparrayToBcast))
                 else:
                     kv.append((k, v))
             comm.bcast(kv)
@@ -207,7 +207,7 @@ def bcast_tagged_array(arr):
             new_arr.__dict__.update(kv)
 
         for k, v in kv:
-            if v is 'NPARRAY_TO_BCAST':
+            if isinstance(v, _MsgNparrayToBcast):
                 new_arr.k = bcast(v)
 
     if rank != 0:
@@ -615,14 +615,14 @@ if rank == 0:
                     raise RuntimeError('First argument cannot be skipped.')
                 elif k-1 < nargs:
                     # k-1 because first argument dev was excluded from args
-                    args[k-1] = 'SKIPPED_ARG'
+                    args[k-1] = _MsgSkippedArg
         return args
 
     def _update_kwargs(kwargs, skip_kwargs):
         if skip_kwargs:
             for k in skip_kwargs:
                 if k in kwargs:
-                    kwargs[k] = 'SKIPPED_ARG'
+                    kwargs[k] = _MsgSkippedArg
         return kwargs
 
 else:
@@ -641,7 +641,7 @@ if rank == 0:
             for src in range(1, pool.size):
                 while True:
                     dat = comm.recv(None, source=src)
-                    if isinstance(dat, str) and dat == 'EOY':
+                    if isinstance(dat, _MsgEndOfYeild):
                         break
                     yield dat
         return main_yield
@@ -673,7 +673,7 @@ else:
                 else:
                     for x in f(*args, **kwargs):
                         comm.send(x, 0)
-                    comm.send('EOY', 0)
+                    comm.send(_MsgEndOfYeild, 0)
             client_yield.__doc__ = f.__doc__
             return client_yield
 
@@ -683,7 +683,6 @@ else:
             return mpi_map(fn)
 
 def _reduce_call(module, name, reg_procs, args, kwargs):
-    import importlib
     from mpi4pyscf.tools import mpi
     result = mpi._distribute_call(module, name, reg_procs, args, kwargs)
     return mpi.reduce(result)
@@ -752,3 +751,14 @@ def platform_info():
     else:
         return pool.apply(info, (), ())
 
+class _MsgOutOfTasks:
+    pass
+
+class _MsgSkippedArg:
+    pass
+
+class _MsgNparrayToBcast:
+    pass
+
+class _MsgEndOfYeild:
+    pass
