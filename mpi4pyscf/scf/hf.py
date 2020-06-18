@@ -161,10 +161,15 @@ def _eval_jk(mf, dm, hermi, gen_jobs):
                 kparts = kparts[i+1:]
 
     vk = mpi.reduce(vk)
-    if rank == 0 and hermi:
-        for i in range(n_recipes):
-            for j in range(n_dm):
-                lib.hermi_triu(vk[i,j], hermi, inplace=True)
+    if rank == 0:
+        if hermi:
+            for i in range(n_recipes):
+                for j in range(n_dm):
+                    lib.hermi_triu(vk[i,j], hermi, inplace=True)
+    else:
+        # Zero out vk on workers. If reduce(get_jk()) is called twice,
+        # non-zero vk on workers can cause error.
+        vk[:] = 0
     logger.timer(mf, 'get_jk', *cpu0)
     return vk
 
