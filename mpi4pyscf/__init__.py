@@ -2,7 +2,7 @@
 An MPI plugin for PySCF
 '''
 
-__version__ = '0.3'
+__version__ = '0.3.0'
 
 import pyscf
 from distutils.version import LooseVersion

@@ -1,3 +1,9 @@
+mpi4pyscf 0.3.0 (2020-9-16)
+---------------------------
+* Update
+  - Refactor helper functions in tools.mpi
+
+
 mpi4pyscf 0.3 (2020-3-21)
 -------------------------
 Bind to pyscf-1.7
@@ -14,6 +20,7 @@ Bind to pyscf-1.6
   - PBC df module (including FFT, AFT, GDF, MDF)
   - molecular RMP2
   - molecular RCCSD
+
 
 mpi4pyscf 0.1 (2016-7-23)
 -------------------------
