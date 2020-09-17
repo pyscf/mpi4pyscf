@@ -12,9 +12,6 @@ def get_version():
                 return eval(line.strip().split(' = ')[1])
     raise ValueError("Version string not found")
 
-with open(os.path.join(topdir, 'README.md'), 'r') as f:
-    long_description = f.read()
-
 with open(os.path.join(topdir, 'requirements.txt'), 'r') as f:
     requirements = f.read().splitlines()
 
@@ -22,7 +19,7 @@ setup(
     name='mpi4pyscf',
     version=get_version(),
     description='An MPI plugin for PySCF.',
-    long_description=long_description,
+    long_description='mpi4pyscf is a plugin for PySCF which enables MPI (Message Passing Interface) parallelism.',
     url='http://www.pyscf.org',
     download_url='https://github.com/pyscf/mpi4pyscf',
     author='Qiming Sun',
