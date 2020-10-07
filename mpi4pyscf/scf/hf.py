@@ -32,7 +32,7 @@ def get_jk(mol_or_mf=None, dm=None, hermi=1, with_j=True, with_k=True, omega=Non
         mf = mol_or_mf
 
     # dm may be too big for mpi4py library to serialize. Broadcast dm here.
-    if any(comm.allgather(isinstance(dm, mpi._MsgSkippedArg))):
+    if any(comm.allgather(dm is mpi.Message.SkippedArg)):
         dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))
@@ -59,7 +59,7 @@ def get_j(mol_or_mf=None, dm=None, hermi=1, omega=None):
         mf = mol_or_mf
 
     # dm may be too big for mpi4py library to serialize. Broadcast dm here.
-    if any(comm.allgather(isinstance(dm, mpi._MsgSkippedArg))):
+    if any(comm.allgather(dm is mpi.Message.SkippedArg)):
         dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))
@@ -84,7 +84,7 @@ def get_k(mol_or_mf=None, dm=None, hermi=1, omega=None):
         mf = mol_or_mf
 
     # dm may be too big for mpi4py library to serialize. Broadcast dm here.
-    if any(comm.allgather(isinstance(dm, mpi._MsgSkippedArg))):
+    if any(comm.allgather(dm is mpi.Message.SkippedArg)):
         dm = mpi.bcast_tagged_array(dm)
 
     mf.unpack_(comm.bcast(mf.pack()))

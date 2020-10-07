@@ -26,15 +26,15 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
 
     # Broadcast the large input arrays here.
-    if any(comm.allgather(isinstance(dm, mpi._MsgSkippedArg))):
+    if any(comm.allgather(dm is mpi.Message.SkippedArg)):
         if rank == 0 and dm is None:
             dm = mf.make_rdm1()
         dm = mpi.bcast_tagged_array(dm)
 
-    if any(comm.allgather(isinstance(dm_last, mpi._MsgSkippedArg))):
+    if any(comm.allgather(dm_last is mpi.Message.SkippedArg)):
         dm_last = mpi.bcast_tagged_array(dm_last)
 
-    if any(comm.allgather(isinstance(vhf_last, mpi._MsgSkippedArg))):
+    if any(comm.allgather(vhf_last is mpi.Message.SkippedArg)):
         vhf_last = mpi.bcast_tagged_array(vhf_last)
 
     ground_state = (isinstance(dm, numpy.ndarray) and dm.ndim == 2)

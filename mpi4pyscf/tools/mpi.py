@@ -2,6 +2,7 @@
 
 import sys
 import time
+import enum
 import threading
 import traceback
 import numpy
@@ -71,14 +72,14 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
                         if rest_tasks and load[i] < loadmin:
                             jobs[i] = rest_tasks.pop()
                 else:
-                    jobs = [_MsgOutOfTasks] * pool.size
+                    jobs = [Message.OutOfTasks] * pool.size
                 task = comm.scatter(jobs)
             else:
                 task = comm.scatter(None)
 
             if task is not None:
                 tasks.insert(0, task)
-            if tasks and isinstance(tasks[0], _MsgOutOfTasks):
+            if tasks and tasks[0] is Message.OutOfTasks:
                 return
 
             time.sleep(interval)
@@ -89,7 +90,7 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
     while True:
         if tasks:
             task = tasks.pop()
-            if isinstance(task, _MsgOutOfTasks):
+            if task is Message.OutOfTasks:
                 break
             yield task
     tasks_handler.join()
@@ -108,7 +109,7 @@ def work_stealing_partition(tasks, interval=.1):
             ntasks = len(tasks)
             loads = comm.allgather(ntasks)
             if all(n <= 1 for n in loads):
-                tasks.insert(0, _MsgOutOfTasks)
+                tasks.insert(0, Message.OutOfTasks)
                 break
 
             elif any(n <= 1 for n in loads) and any(n >= 3 for n in loads):
@@ -145,7 +146,7 @@ def work_stealing_partition(tasks, interval=.1):
     while True:
         if tasks:
             task = tasks.pop()
-            if isinstance(task, _MsgOutOfTasks):
+            if task is Message.OutOfTasks:
                 break
             yield task
 
@@ -198,7 +199,7 @@ def bcast_tagged_array(arr):
             kv = []
             for k, v in arr.__dict__.items():
                 if isinstance(v, numpy.ndarray) and v.nbytes > 1e5:
-                    kv.append((k, _MsgNparrayToBcast))
+                    kv.append((k, Message.NparrayToBcast))
                 else:
                     kv.append((k, v))
             comm.bcast(kv)
@@ -207,7 +208,7 @@ def bcast_tagged_array(arr):
             new_arr.__dict__.update(kv)
 
         for k, v in kv:
-            if isinstance(v, _MsgNparrayToBcast):
+            if v is Message.NparrayToBcast:
                 new_arr.k = bcast(v)
 
     if rank != 0:
@@ -615,14 +616,14 @@ if rank == 0:
                     raise RuntimeError('First argument cannot be skipped.')
                 elif k-1 < nargs:
                     # k-1 because first argument dev was excluded from args
-                    args[k-1] = _MsgSkippedArg
+                    args[k-1] = Message.SkippedArg
         return args
 
     def _update_kwargs(kwargs, skip_kwargs):
         if skip_kwargs:
             for k in skip_kwargs:
                 if k in kwargs:
-                    kwargs[k] = _MsgSkippedArg
+                    kwargs[k] = Message.SkippedArg
         return kwargs
 
 else:
@@ -641,7 +642,7 @@ if rank == 0:
             for src in range(1, pool.size):
                 while True:
                     dat = comm.recv(None, source=src)
-                    if isinstance(dat, _MsgEndOfYeild):
+                    if dat is Message.EndOfYeild:
                         break
                     yield dat
         return main_yield
@@ -673,7 +674,7 @@ else:
                 else:
                     for x in f(*args, **kwargs):
                         comm.send(x, 0)
-                    comm.send(_MsgEndOfYeild, 0)
+                    comm.send(Message.EndOfYeild, 0)
             client_yield.__doc__ = f.__doc__
             return client_yield
 
@@ -751,14 +752,8 @@ def platform_info():
     else:
         return pool.apply(info, (), ())
 
-class _MsgOutOfTasks:
-    pass
-
-class _MsgSkippedArg:
-    pass
-
-class _MsgNparrayToBcast:
-    pass
-
-class _MsgEndOfYeild:
-    pass
+class Message(enum.Enum):
+    OutOfTasks = 1
+    SkippedArg = 2
+    NparrayToBcast = 3
+    EndOfYeild = 4

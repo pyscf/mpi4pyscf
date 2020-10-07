@@ -140,11 +140,10 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=numpy.zeros((1,3)),
         # If we have an ewald exxdiv, we add the G=0 correction near the
         # end of the function to bypass any discretization errors
         # that arise from the FFT.
-        mydf.exxdiv = exxdiv
         if exxdiv == 'ewald' or exxdiv is None:
             coulG = tools.get_coulG(cell, kpt2-kpt1, False, mydf, mesh)
         else:
-            coulG = tools.get_coulG(cell, kpt2-kpt1, True, mydf, mesh)
+            coulG = tools.get_coulG(cell, kpt2-kpt1, exxdiv, mydf, mesh)
         if is_zero(kpt1-kpt2):
             expmikr = numpy.array(1.)
         else:
