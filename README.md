@@ -3,9 +3,9 @@ An MPI plugin for PySCF
 
 mpi4pyscf is a plugin for PySCF which enables MPI (Message Passing Interface) parallelism.
 
-2020-09-16
+2020-10-07
 
-* [Latest version 0.3.0](https://github.com/mpipyscf/mpipyscf/releases/tag/v0.3.0)
+* [Latest version 0.3.1](https://github.com/mpipyscf/mpipyscf/releases/tag/v0.3.1)
 
 Quick start
 -----------

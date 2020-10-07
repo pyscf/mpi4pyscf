@@ -11,7 +11,6 @@ __all__ = ["MPIPool", "MPIPoolException"]
 import os
 import sys
 import types
-import imp
 import importlib
 import types
 import marshal
@@ -92,6 +91,7 @@ class MPIPool(object):
 # Global import lock affects the ctypes module.  It leads to deadlock when
 # ctypes function is called in new threads created by threading module.
                 if sys.version_info < (3,4):
+                    import imp
                     if not imp.lock_held():
                         imp.acquire_lock()
                 return

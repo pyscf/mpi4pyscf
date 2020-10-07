@@ -2,7 +2,7 @@
 An MPI plugin for PySCF
 '''
 
-__version__ = '0.3.0'
+__version__ = '0.3.1'
 
 import pyscf
 from distutils.version import LooseVersion
@@ -16,7 +16,6 @@ from pyscf import __all__
 from .tools import mpi
 if not mpi.pool.is_master():
     import sys
-    import imp
     import traceback
 # Handle global import lock for multithreading, see
 #   http://stackoverflow.com/questions/12389526/import-inside-of-a-python-thread
@@ -24,6 +23,7 @@ if not mpi.pool.is_master():
 # Global import lock affects the ctypes module.  It leads to deadlock when
 # ctypes function is called in new threads created by threading module.
     if sys.version_info < (3,4):
+        import imp
         if imp.lock_held():
             imp.release_lock()
 
@@ -38,3 +38,6 @@ if not mpi.pool.is_master():
     if sys.version_info < (3,4):
         if not imp.lock_held():
             imp.acquire_lock()
+
+    # Ensure mpi processes terminated
+    exit(0)
