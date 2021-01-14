@@ -12,10 +12,10 @@ Quick start
 
 When the script of the serial PySCF version works, MPI can be activated by
 importing mpi4pyscf and replacing the corresponding initialization statements in
-the script. For examples::
+the script. For example:
 ```
 import pyscf
-mol = pyscf..M(atom='''
+mol = pyscf.M(atom='''
 O    0.   0.       0.
 H    0.   -0.757   0.587
 H    0.   0.757    0.587''',
@@ -30,7 +30,7 @@ from mpipyscf import scf
 mf = scf.RHF(mol).run()
 ```
 
-See more examples of usage in https://github.com/pyscf/mpi4pyscf/examples
+See more examples of usage in [examples](https://github.com/pyscf/mpi4pyscf/tree/master/examples).
 
 Installation
 ------------
@@ -38,4 +38,3 @@ Installation
 ```
 pip install mpi4pyscf
 ```
-
