@@ -697,14 +697,17 @@ def energy(mycc, t1=None, t2=None, eris=None):
     t2T = t2.transpose(2,3,0,1)
     fock = eris.fock
     loc0, loc1 = _task_location(nvir)
-    e = numpy.einsum('ia,ia', fock[:nocc,nocc:], t1) * 2
+    if rank == 0:
+        e = numpy.einsum('ia,ia', fock[:nocc,nocc:], t1).real * 2
+    else:
+        e = 0.
     max_memory = mycc.max_memory - lib.current_memory()[0]
     blksize = int(min(nvir, max(BLKMIN, max_memory*.3e6/8/(nocc**2*nvir+1))))
     for p0, p1 in lib.prange(0, loc1-loc0, blksize):
         eris_ovov = eris.ovov[:,p0:p1]
         tau = t2T[p0:p1] + numpy.einsum('ia,jb->abij', t1[:,p0+loc0:p1+loc0], t1)
-        e += 2 * numpy.einsum('abij,iajb', tau, eris_ovov)
-        e -=     numpy.einsum('abji,iajb', tau, eris_ovov)
+        e += 2 * numpy.einsum('abij,iajb', tau, eris_ovov).real
+        e -=     numpy.einsum('abji,iajb', tau, eris_ovov).real
     e = comm.allreduce(e)
 
     if rank == 0 and abs(e.imag) > 1e-4:

@@ -79,8 +79,8 @@ def work_share_partition(tasks, interval=.1, loadmin=2):
 
             if task is not None:
                 tasks.insert(0, task)
-            if tasks and tasks[0] is Message.OutOfTasks:
-                return
+                if task is Message.OutOfTasks:
+                    return
 
             time.sleep(interval)
 
@@ -166,12 +166,13 @@ def bcast_test(buf, root=0):  # To test, maybe with better performance
     if rank != root:
         buf = numpy.empty(shape, dtype=dtype)
 
+    dtype = buf.dtype.char
     if buf.size <= BLKSIZE:
-        comm.Bcast(buf, root)
+        comm.Bcast([buf, dtype], root)
     else:
         deriv_dtype, count, rest = _create_dtype(buf)
         comm.Bcast([buf, count, deriv_dtype], root)
-        comm.Bcast(buf[-rest*deriv_dtype.size:], root)
+        comm.Bcast([buf[-rest*deriv_dtype.size:], dtype], root)
     return buf
 
 def bcast(buf, root=0):
@@ -180,9 +181,10 @@ def bcast(buf, root=0):
     if rank != root:
         buf = numpy.empty(shape, dtype=dtype)
 
+    dtype = buf.dtype.char
     buf_seg = numpy.ndarray(buf.size, dtype=buf.dtype, buffer=buf)
     for p0, p1 in lib.prange(0, buf.size, BLKSIZE):
-        comm.Bcast(buf_seg[p0:p1], root)
+        comm.Bcast([buf_seg[p0:p1], dtype], root)
     return buf
 
 
@@ -221,11 +223,13 @@ def reduce(sendbuf, op=MPI.SUM, root=0):
     shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
     _assert(sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype)
 
+    dtype = sendbuf.dtype.char
     recvbuf = numpy.zeros_like(sendbuf)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
     for p0, p1 in lib.prange(0, sendbuf.size, BLKSIZE):
-        comm.Reduce(send_seg[p0:p1], recv_seg[p0:p1], op, root)
+        comm.Reduce([send_seg[p0:p1], dtype],
+                    [recv_seg[p0:p1], dtype], op, root)
 
     if rank == root:
         return recvbuf
@@ -237,11 +241,13 @@ def allreduce(sendbuf, op=MPI.SUM):
     shape, mpi_dtype = comm.bcast((sendbuf.shape, sendbuf.dtype.char))
     _assert(sendbuf.shape == shape and sendbuf.dtype.char == mpi_dtype)
 
+    dtype = sendbuf.dtype.char
     recvbuf = numpy.zeros_like(sendbuf)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
     for p0, p1 in lib.prange(0, sendbuf.size, BLKSIZE):
-        comm.Allreduce(send_seg[p0:p1], recv_seg[p0:p1], op)
+        comm.Allreduce([send_seg[p0:p1], dtype],
+                       [recv_seg[p0:p1], dtype], op)
     return recvbuf
 
 def scatter(sendbuf, root=0):
@@ -267,16 +273,16 @@ def scatter(sendbuf, root=0):
     return recvbuf.reshape(shape)
 
 def gather(sendbuf, root=0, split_recvbuf=False):
-#    if pool.debug:
-#        if rank == 0:
-#            res = [sendbuf]
-#            for k in range(1, pool.size):
-#                dat = comm.recv(source=k)
-#                res.append(dat)
-#            return numpy.vstack([x for x in res if len(x) > 0])
-#        else:
-#            comm.send(sendbuf, dest=0)
-#            return sendbuf
+    #if pool.debug:
+    #    if rank == 0:
+    #        res = [sendbuf]
+    #        for k in range(1, pool.size):
+    #            dat = comm.recv(source=k)
+    #            res.append(dat)
+    #        return numpy.vstack([x for x in res if len(x) > 0])
+    #    else:
+    #        comm.send(sendbuf, dest=0)
+    #        return sendbuf
 
     sendbuf = numpy.asarray(sendbuf, order='C')
     shape = sendbuf.shape
@@ -372,16 +378,17 @@ def alltoall(sendbuf, split_recvbuf=False):
 
     if split_recvbuf:
         return [recvbuf[p0:p0+c].reshape(shape)
-                for p0,c,shape in zip(rdispls,rcounts,rshape)]
+                for p0,c,shape in zip(rdispls, rcounts, rshape)]
     else:
         return recvbuf
 
 def send(sendbuf, dest=0, tag=0):
     sendbuf = numpy.asarray(sendbuf, order='C')
-    comm.send((sendbuf.shape, sendbuf.dtype), dest=dest, tag=tag)
+    dtype = sendbuf.dtype.char
+    comm.send((sendbuf.shape, dtype), dest=dest, tag=tag)
     send_seg = numpy.ndarray(sendbuf.size, dtype=sendbuf.dtype, buffer=sendbuf)
     for p0, p1 in lib.prange(0, sendbuf.size, BLKSIZE):
-        comm.Send(send_seg[p0:p1], dest=dest, tag=tag)
+        comm.Send([send_seg[p0:p1], dtype], dest=dest, tag=tag)
     return sendbuf
 
 def recv(source=0, tag=0):
@@ -389,7 +396,7 @@ def recv(source=0, tag=0):
     recvbuf = numpy.empty(shape, dtype=dtype)
     recv_seg = numpy.ndarray(recvbuf.size, dtype=recvbuf.dtype, buffer=recvbuf)
     for p0, p1 in lib.prange(0, recvbuf.size, BLKSIZE):
-        comm.Recv(recv_seg[p0:p1], source=source, tag=tag)
+        comm.Recv([recv_seg[p0:p1], dtype], source=source, tag=tag)
     return recvbuf
 
 def sendrecv(sendbuf, source=0, dest=0, tag=0):

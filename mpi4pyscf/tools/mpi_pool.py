@@ -12,7 +12,6 @@ import os
 import sys
 import types
 import importlib
-import types
 import marshal
 import traceback
 from mpi4py import MPI
@@ -67,7 +66,7 @@ class MPIPool(object):
         if self.is_master():
             return
 
-        status = MPI.Status()
+        MPI.Status()
 
         while True:
             # Event loop.
@@ -115,7 +114,7 @@ class MPIPool(object):
                           '  The generator was consumed to avoid workers getting stuck.\n'
                           .format(self.function, ans))
                     [x for x in ans]
-                ans = x = None
+                ans = None
                 self.worker_status = 'P'
 
 
