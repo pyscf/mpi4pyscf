@@ -166,13 +166,12 @@ def bcast_test(buf, root=0):  # To test, maybe with better performance
     if rank != root:
         buf = numpy.empty(shape, dtype=dtype)
 
-    dtype = buf.dtype.char
     if buf.size <= BLKSIZE:
-        comm.Bcast([buf, dtype], root)
+        comm.Bcast([buf, buf.dtype.char], root)
     else:
         deriv_dtype, count, rest = _create_dtype(buf)
         comm.Bcast([buf, count, deriv_dtype], root)
-        comm.Bcast([buf[-rest*deriv_dtype.size:], dtype], root)
+        comm.Bcast([buf[-rest*deriv_dtype.size:], deriv_dtype], root)
     return buf
 
 def bcast(buf, root=0):
