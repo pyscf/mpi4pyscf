@@ -22,7 +22,7 @@ rank = mpi.rank
 
 @mpi.parallel_call(skip_args=[1], skip_kwargs=['eris'])
 def kernel(mycc, eris=None):
-    cpu0 = (time.clock(), time.time())
+    cpu0 = (logger.process_clock(), logger.perf_counter())
     ccsd._sync_(mycc)
     log = logger.new_logger(mycc)
 
@@ -38,7 +38,7 @@ def kernel(mycc, eris=None):
     mo_energy = eris.mo_energy.copy()
     et_sum = numpy.zeros(1, dtype=t1T.dtype)
     drv = _ccsd.libcc.MPICCsd_t_contract
-    cpu2 = [time.clock(), time.time()]
+    cpu2 = [process_clock(), perf_counter()]
     def contract(slices, data):
         #vvop_ab, vvop_ac, vvop_ba, vvop_bc, vvop_ca, vvop_cb, \
         #        vooo_a, vooo_b, vooo_c, t2T_a, t2T_b, t2T_c = data
@@ -161,7 +161,7 @@ class GlobalDataHandler(object):
     def start(self, interval=0.02):
         mycc = self._cc
         log = logger.new_logger(mycc)
-        cpu1 = (time.clock(), time.time())
+        cpu1 = (logger.process_clock(), logger.perf_counter())
         eris = mycc._eris
         t2T = mycc.t2.transpose(2,3,0,1)
 

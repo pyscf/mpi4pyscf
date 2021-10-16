@@ -39,7 +39,7 @@ rank = mpi.rank
 
 def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log = logger.Logger(mydf.stdout, mydf.verbose)
-    t1 = t0 = (time.clock(), time.time())
+    t1 = t0 = (logger.process_clock(), logger.perf_counter())
 
     fused_cell, fuse = fuse_auxcell(mydf, mydf.auxcell)
     ao_loc = cell.ao_loc_nr()

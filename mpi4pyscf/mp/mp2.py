@@ -111,7 +111,7 @@ RMP2 = MP2
 @mpi.parallel_call
 def _make_eris(mp, mo_coeff=None, verbose=None):
     log = logger.new_logger(mp, verbose)
-    time0 = (time.clock(), time.time())
+    time0 = (logger.process_clock(), logger.perf_counter())
 
     log.debug('transform (ia|jb) outcore')
     mol = mp.mol
