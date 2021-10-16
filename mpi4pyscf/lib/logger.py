@@ -8,10 +8,10 @@ import time
 
 if sys.version_info < (3, 0):
     process_clock = time.clock
-    perf_counter = time.time
+    perf_counter  = time.time
 else:
     process_clock = time.process_time
-    perf_counter = time.perf_counter
+    perf_counter  = time.perf_counter
 
 from pyscf.lib import logger
 from mpi4pyscf.tools import mpi
