@@ -6,6 +6,13 @@
 import sys
 import time
 
+if sys.version_info < (3, 0):
+    process_clock = time.clock
+    perf_counter  = time.time
+else:
+    process_clock = time.process_time
+    perf_counter  = time.perf_counter
+
 from pyscf.lib import logger
 from mpi4pyscf.tools import mpi
 rank = mpi.rank
@@ -109,7 +116,7 @@ def alltimer(rec, msg, cpu0=None, wall0=None):
     if cpu0 is None:
         cpu0 = rec._t0
     if wall0:
-        rec._t0, rec._w0 = time.clock(), time.time()
+        rec._t0, rec._w0 = process_clock(), perf_counter()
         if rec.verbose >= logger.TIMER_LEVEL:
             allflush(rec, '    CPU time for %s %9.2f sec, wall time %9.2f sec'
                      % (msg, rec._t0-cpu0, rec._w0-wall0))
@@ -124,7 +131,7 @@ def alltimer_debug1(rec, msg, cpu0=None, wall0=None):
     if rec.verbose >= logger.DEBUG1:
         return alltimer(rec, msg, cpu0, wall0)
     elif wall0:
-        rec._t0, rec._w0 = time.clock(), time.time()
+        rec._t0, rec._w0 = process_clock(), perf_counter()
         return rec._t0, rec._w0
     else:
         rec._t0 = time.clock()
@@ -134,7 +141,7 @@ def alltimer_debug2(rec, msg, cpu0=None, wall0=None):
     if rec.verbose >= logger.DEBUG2:
         return alltimer(rec, msg, cpu0, wall0)
     elif wall0:
-        rec._t0, rec._w0 = time.clock(), time.time()
+        rec._t0, rec._w0 = process_clock(), perf_counter()
         return rec._t0, rec._w0
     else:
         rec._t0 = time.clock()

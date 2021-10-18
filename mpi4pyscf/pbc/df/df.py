@@ -43,7 +43,7 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
     log = logger.Logger(mydf.stdout, mydf.verbose)
     log.debug('MPI info (rank, host, pid)  %s', mpi.platform_info())
 
-    t1 = (time.clock(), time.time())
+    t1 = (logger.process_clock(), logger.perf_counter())
     if mydf.kpts_band is not None:
         mydf.kpts_band = numpy.reshape(mydf.kpts_band, (-1,3))
     if kpts_band is not None:
@@ -90,7 +90,7 @@ def build(mydf, j_only=None, with_j3c=True, kpts_band=None):
 
 def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     log = logger.Logger(mydf.stdout, mydf.verbose)
-    t1 = t0 = (time.clock(), time.time())
+    t1 = t0 = (logger.process_clock(), logger.perf_counter())
 
     fused_cell, fuse = fuse_auxcell(mydf, mydf.auxcell)
     ao_loc = cell.ao_loc_nr()
@@ -346,7 +346,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
     _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log)
 
 def _assemble(mydf, kptij_lst, j3c_jobs, gen_int3c, ft_fuse, cderi_file, fswap, log):
-    t1 = (time.clock(), time.time())
+    t1 = (logger.process_clock(), logger.perf_counter())
     cell = mydf.cell
     ao_loc = cell.ao_loc_nr()
     nao = ao_loc[-1]

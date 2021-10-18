@@ -100,7 +100,7 @@ def get_k(mol_or_mf=None, dm=None, hermi=1, omega=None):
     return vk.reshape(dm.shape)
 
 def _eval_jk(mf, dm, hermi, gen_jobs):
-    cpu0 = (time.clock(), time.time())
+    cpu0 = (logger.process_clock(), logger.perf_counter())
     mol = mf.mol
     ao_loc = mol.ao_loc_nr()
     nao = ao_loc[-1]
