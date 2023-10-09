@@ -248,7 +248,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
         else:
             shls_slice = (sh0, sh1, 0, cell.nbas)
         for p0, p1 in lib.prange(0, ngrids, Gblksize):
-            dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
+            dat = ft_ao.ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
             nG = p1 - p0

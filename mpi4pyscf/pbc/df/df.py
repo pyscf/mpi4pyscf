@@ -310,7 +310,7 @@ def _make_j3c(mydf, cell, auxcell, kptij_lst, cderi_file):
             kLI = Gaux.imag.copy('C')
             Gaux = None
 
-            dat = ft_ao._ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
+            dat = ft_ao.ft_aopair_kpts(cell, Gv[p0:p1], shls_slice, aosym, b,
                                         gxyz[p0:p1], Gvbase, kpt,
                                         adapted_kptjs, out=buf)
             nG = p1 - p0
