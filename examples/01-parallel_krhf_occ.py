@@ -46,17 +46,3 @@ mf.verbose = 4
 
 ehf = mf.kernel()
 print("HF energy (per unit cell) = %.17g" % ehf)
-#
-# Replace the serial DF module with MPI implementation to parallelize the J/K
-# evaluation.
-#
-Jtime=time.time()
-mf.with_df = df.DF(cell, kpts)
-#print(mf.scf())
-print "Took this long for intg: ", time.time()-Jtime
-#
-# Similar replacement can be placed on MDF module
-#
-mf.with_df = df.MDF(cell, kpts)
-#print mf.scf()
-
