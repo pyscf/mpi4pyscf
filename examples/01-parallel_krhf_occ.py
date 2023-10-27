@@ -4,10 +4,10 @@
 #
 
 '''
-Parallelized k-points RHF calculation
+Parallelized k-points RHF calculation using occ-fft
 
 Run the hybrid parallel mode in command line
-OMP_NUM_THREADS=4 mpirun -np 4 python 01-parallel_krhf.py
+OMP_NUM_THREADS=4 mpirun -np 4 python 01-parallel_krhf_occ.py
 '''
 
 import pyscf.pbc.tools.pyscf_ase as pyscf_ase
