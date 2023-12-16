@@ -68,6 +68,13 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=False,
 
 @mpi.register_class_without__init__
 class MP2(mp2.MP2):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
+        mp2.MP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+        if mo_coeff is None or mo_coeff is self._scf.mo_coeff:
+            self.e_hf = self._scf.e_tot
+            self.mo_energy = self._scf.mo_energy
+        else:
+            raise NotImplementedError
 
     def pack(self):
         return {'verbose'   : self.verbose,
@@ -78,6 +85,7 @@ class MP2(mp2.MP2):
                 'mo_occ'    : self.mo_occ,
                 '_nocc'     : self._nocc,
                 '_nmo'      : self._nmo}
+
     def unpack_(self, mp2_dic):
         self.__dict__.update(mp2_dic)
         return self
