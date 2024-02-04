@@ -82,9 +82,9 @@ class MP2(mp2.MP2):
         self.__dict__.update(mp2_dic)
         return self
 
-    def dump_flags(self):
+    def dump_flags(self, verbose=None):
         if rank == 0:
-            mp2.MP2.dump_flags(self)
+            mp2.MP2.dump_flags(self, verbose)
         return self
     def sanity_check(self):
         if rank == 0:

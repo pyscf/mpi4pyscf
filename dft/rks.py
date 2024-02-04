@@ -140,10 +140,10 @@ class RKS(rks.RKS, mpi_hf.RHF):
                 'omega': self.omega,
                 'small_rho_cutoff': self.small_rho_cutoff, }
 
-    def dump_flags(self):
+    def dump_flags(self, verbose=None):
         mpi_info = mpi.platform_info()
         if rank == 0:
-            rks.RKS.dump_flags(self)
+            rks.RKS.dump_flags(self, verbose)
             lib.logger.debug(self, 'MPI info (rank, host, pid)  %s', mpi_info)
         return self
 
