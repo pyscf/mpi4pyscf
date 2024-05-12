@@ -55,37 +55,37 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         logger.debug(mf, 'nelec by numeric integration = %s', n)
         t0 = logger.timer(mf, 'vxc', *t0)
 
-    if abs(hyb) < 1e-10 and abs(alpha) < 1e-10:
+    if not ni.libxc.is_hybrid_xc(mf.xc):
         vk = None
-        if getattr(vhf_last, 'vj', None) is not None:
-            ddm = numpy.asarray(dm) - dm_last
-            ddm = ddm[0] + ddm[1]
-            vj = mf.get_j(mol, ddm, hermi)
+        if (mf._eri is None and mf.direct_scf and
+            getattr(vhf_last, 'vj', None) is not None):
+            ddm = numpy.asarray(dm) - numpy.asarray(dm_last)
+            vj = mf.get_j(mol, ddm[0]+ddm[1], hermi)
             vj += vhf_last.vj
         else:
             vj = mf.get_j(mol, dm[0]+dm[1], hermi)
         vxc += vj
     else:
-        if getattr(vhf_last, 'vk', None) is not None:
-            ddm = numpy.asarray(dm) - dm_last
+        if (mf._eri is None and mf.direct_scf and
+            getattr(vhf_last, 'vk', None) is not None):
+            ddm = numpy.asarray(dm) - numpy.asarray(dm_last)
             vj, vk = mf.get_jk(mol, ddm, hermi)
-            vj = vj[0] + vj[1]
             vk *= hyb
-            if abs(omega) > 1e-10:
-                vklr = mf.get_k(mol, ddm, hermi, omega=omega)
-                vk += vklr * (alpha - hyb)
-            ddm = None
-            vj += vhf_last.vj
+            if omega != 0:
+                vklr = mf.get_k(mol, ddm, hermi, omega)
+                vklr *= (alpha - hyb)
+                vk += vklr
+            vj = vj[0] + vj[1] + vhf_last.vj
             vk += vhf_last.vk
         else:
             vj, vk = mf.get_jk(mol, dm, hermi)
             vj = vj[0] + vj[1]
             vk *= hyb
-            if abs(omega) > 1e-10:
-                vklr = mf.get_k(mol, dm, hermi, omega=omega)
-                vk += vklr * (alpha - hyb)
-        vxc += vj
-        vxc -= vk
+            if omega != 0:
+                vklr = mf.get_k(mol, dm, hermi, omega)
+                vklr *= (alpha - hyb)
+                vk += vklr
+        vxc += vj - vk
 
         if ground_state:
             exc -=(numpy.einsum('ij,ji', dm[0], vk[0]) +

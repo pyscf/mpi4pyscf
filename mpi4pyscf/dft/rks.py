@@ -5,6 +5,8 @@ import time
 import numpy
 from pyscf import lib
 from pyscf.dft import rks
+from pyscf import __config__
+NELEC_ERROR_TOL = getattr(__config__, 'dft_rks_prune_error_tol', 0.02)
 
 from mpi4pyscf.lib import logger
 from mpi4pyscf.scf import hf as mpi_hf
@@ -53,32 +55,35 @@ def get_veff(mf, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         logger.debug(mf, 'nelec by numeric integration = %s', n)
         t0 = logger.timer(mf, 'vxc', *t0)
 
-    if abs(hyb) < 1e-10 and abs(alpha) < 1e-10:
+    if not ni.libxc.is_hybrid_xc(mf.xc):
         vk = None
-        if getattr(vhf_last, 'vj', None) is not None:
-            ddm = numpy.asarray(dm) - dm_last
+        if (mf._eri is None and mf.direct_scf and
+            getattr(vhf_last, 'vj', None) is not None):
+            ddm = numpy.asarray(dm) - numpy.asarray(dm_last)
             vj = mf.get_j(mol, ddm, hermi)
             vj += vhf_last.vj
         else:
             vj = mf.get_j(mol, dm, hermi)
         vxc += vj
     else:
-        if getattr(vhf_last, 'vk', None) is not None:
-            ddm = numpy.asarray(dm) - dm_last
+        if (mf._eri is None and mf.direct_scf and
+            getattr(vhf_last, 'vk', None) is not None):
+            ddm = numpy.asarray(dm) - numpy.asarray(dm_last)
             vj, vk = mf.get_jk(mol, ddm, hermi)
             vk *= hyb
-            if abs(omega) > 1e-10:
+            if omega != 0:  # For range separated Coulomb
                 vklr = mf.get_k(mol, ddm, hermi, omega=omega)
-                vk += vklr * (alpha - hyb)
-            ddm = None
+                vklr *= (alpha - hyb)
+                vk += vklr
             vj += vhf_last.vj
             vk += vhf_last.vk
         else:
             vj, vk = mf.get_jk(mol, dm, hermi)
             vk *= hyb
-            if abs(omega) > 1e-10:
+            if omega != 0:
                 vklr = mf.get_k(mol, dm, hermi, omega=omega)
-                vk += vklr * (alpha - hyb)
+                vklr *= (alpha - hyb)
+                vk += vklr
         vxc += vj - vk * .5
 
         if ground_state:
@@ -111,7 +116,7 @@ def _setup_grids_(mf, dm):
     if mf.small_rho_cutoff > 1e-20 and ground_state:
         rho = mf._numint.get_rho(mol, dm, grids, mf.max_memory)
         n = comm.allreduce(numpy.dot(rho, grids.weights))
-        if abs(n-mol.nelectron) < rks.NELEC_ERROR_TOL*n:
+        if abs(n-mol.nelectron) < NELEC_ERROR_TOL*n:
             rw = rho * grids.weights
             idx = abs(rw) > mf.small_rho_cutoff / ngrids
             logger.alldebug1(mf, 'Drop grids %d',
