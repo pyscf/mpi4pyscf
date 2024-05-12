@@ -65,7 +65,7 @@ def get_j(mol_or_mf=None, dm=None, hermi=1, omega=None):
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
-    with lib.temporary_env(mf.opt._this.contents,
+    with lib.temporary_env(mf.opt._this,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vj_prescreen')):
         hermi = 1
         if omega is None:
@@ -90,7 +90,7 @@ def get_k(mol_or_mf=None, dm=None, hermi=1, omega=None):
     mf.unpack_(comm.bcast(mf.pack()))
     if mf.opt is None:
         mf.opt = mf.init_direct_scf()
-    with lib.temporary_env(mf.opt._this.contents,
+    with lib.temporary_env(mf.opt._this,
                            fprescreen=_vhf._fpointer('CVHFnrs8_vk_prescreen')):
         if omega is None:
             vk = _eval_jk(mf, dm, hermi, _vk_jobs_s8)

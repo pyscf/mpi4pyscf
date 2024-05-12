@@ -52,15 +52,21 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=False,
     else:
         t2 = None
 
-    emp2 = 0
+    emp2_ss = emp2_os = 0
     for i in range(nocc):
         gi = numpy.asarray(eris.ovov[i])
         gi = gi.reshape(nvir,nocc_seg,nvir).transpose(1,2,0)
         t2i = gi.conj() / (eia[oloc0:oloc1,:,None] + eia[i])
-        emp2 += numpy.einsum('jab,jab', t2i, gi) * 2
-        emp2 -= numpy.einsum('jab,jba', t2i, gi)
+        edi = numpy.einsum('jab,jab', t2i, gi, optimize=True) * 2
+        exi = -numpy.einsum('jab,jba', t2i, gi, optimize=True)
+        emp2_ss += edi*0.5 + exi
+        emp2_os += edi*0.5
         if with_t2:
-            t2[:,i] = t2i
+            t2[i] = t2i
+
+    emp2_ss = emp2_ss.real
+    emp2_os = emp2_os.real
+    emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
 
     emp2 = comm.allreduce(emp2)
     return emp2.real, t2
@@ -106,6 +112,9 @@ class MP2(mp2.MP2):
 
         self.e_corr, self.t2 = kernel(self, mo_energy, mo_coeff,
                                       eris, with_t2, self.verbose)
+        self.e_corr_ss = getattr(self.e_corr, 'e_corr_ss', 0)
+        self.e_corr_os = getattr(self.e_corr, 'e_corr_os', 0)
+        self.e_corr = float(self.e_corr)
         if rank == 0:
             self._finalize()
         return self.e_corr, self.t2
@@ -127,7 +136,8 @@ def _make_eris(mp, mo_coeff=None, verbose=None):
     nmo = mp.nmo
     nvir = nmo - nocc
 
-    eris = mp2._ChemistsERIs(mp, mo_coeff)
+    eris = mp2._ChemistsERIs()
+    eris._common_init_(mp, mo_coeff)
     nao = eris.mo_coeff.shape[0]
     assert(nvir <= nao)
     orbo = eris.mo_coeff[:,:nocc]
