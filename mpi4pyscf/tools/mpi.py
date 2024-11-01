@@ -198,19 +198,25 @@ def bcast_tagged_array(arr):
         new_arr = lib.tag_array(new_arr)
         if rank == 0:
             kv = []
-            for k, v in arr.__dict__.items():
+            nparray_to_bcast = {}
+            for idx, (k, v) in enumerate(arr.__dict__.items()):
                 if isinstance(v, numpy.ndarray) and v.nbytes > 1e5:
-                    kv.append((k, Message.NparrayToBcast))
+                    kv.append([k, Message.NparrayToBcast])
+                    nparray_to_bcast[idx] = v
                 else:
-                    kv.append((k, v))
+                    kv.append([k, v])
             comm.bcast(kv)
+
+            if nparray_to_bcast:
+                for idx, v in nparray_to_bcast.items():
+                    kv[idx][1] = v
         else:
             kv = comm.bcast(None)
             new_arr.__dict__.update(kv)
 
         for k, v in kv:
-            if v is Message.NparrayToBcast:
-                new_arr.k = bcast(v)
+            if any(comm.allgather(v is Message.NparrayToBcast)):
+                setattr(new_arr, k, bcast(v))
 
     if rank != 0:
         arr = new_arr
